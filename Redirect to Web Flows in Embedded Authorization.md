@@ -1,5 +1,19 @@
 # Redirect to Web Flows in Embedded Authorization
 
+> **Amended 2026-09-02 to the settled contract.** This copy differs from the Confluence original
+> where the documents contradicted each other or [draft-ietf-oauth-first-party-apps-04](https://datatracker.ietf.org/doc/draft-ietf-oauth-first-party-apps/).
+> Each change is marked **AMENDED** inline with its reason. The machine-readable record is
+> `DECISIONS` in `src/data/spec.js`; the simulator is held to it by `tests/webflows.test.js`.
+>
+> | Changed | From | To |
+> | --- | --- | --- |
+> | Error code on a browser handoff | `redirect_to_web` on Path B only; `insufficient_authorization` on Path A, forms and Actions redirects | `redirect_to_web` + top-level `request_uri` on **every** leg that opens a browser |
+> | Initiate request | no PKCE shown | `code_challenge` + `code_challenge_method` REQUIRED to receive a `request_uri` |
+> | Native social artifact | `id_token` | `idp_artifact` + `idp_artifact_type` |
+> | Post-login form resume | `action:interaction:form:verify:v1` | `action:interaction:form:v1` |
+> | Web-leg descriptors | TTL held server-side only | `expires_in` returned to the client |
+> | Open Question 1 | open | resolved — resume on the connection-specific action |
+
 > **Vision document — not a final spec or product commitment.**  
 > This document explores how redirect-to-web cases could work in embedded flows to guide design thinking and align the team on a common pattern. The flows, naming, and mechanisms described here are directional. Not all features discussed are committed or scheduled. This document also serves as the conceptual foundation for the bot detection / CAPTCHA implementation (see [Bot Detection Challenge for Embedded Authorize](https://oktainc.atlassian.net/wiki/spaces/IAMEA/pages/1040944724/Bot+Detection+Challenge+for+Embedded+Authorize)), which is the near-term delivery this thinking is guiding.
 
@@ -20,9 +34,10 @@ Every redirect-to-web case follows this shape:
 
 ```
 POST /e/authorize  →  server detects web-only interaction required
-  ← 403 { error: "insufficient_authorization",
+  ← 403 { error: "redirect_to_web",
+           request_uri: "urn:ietf:params:oauth:request_uri:<opaque>",
            auth_session: "...",
-           next: [{ action: "...", href: "..." }] }
+           next: [{ action: "...", href: "...", expires_in: N }] }
 
 App opens browser / WebView with href
 
@@ -47,7 +62,41 @@ App resumes: POST /e/authorize { auth_session: "...", action: "..." }
 
 The `request_uri` URN format is borrowed from [RFC 9126](https://www.rfc-editor.org/rfc/rfc9126) (PAR). We use the format only — not the full PAR protocol. It avoids inventing new terminology and has no collision with the OAuth2 `state` parameter.
 
+**A leg resumes on the action it was offered under. (AMENDED)** Whatever action appears in `next[]` is the action the client sends back — CAPTCHA, federation, forms and Actions redirects all follow the one rule. `next[]` is the server-side allow-list (D2 decision #3), and that is what stops a client skipping a step; admitting an action that was never advertised would turn it into a guideline. This retires `action:interaction:form:verify:v1`, the only id that broke the pattern.
+
+**A pause that opens a browser is `redirect_to_web`; a pause the client handles in-app is `insufficient_authorization`. (AMENDED)** One rule, applied consistently — this document previously used `redirect_to_web` on Path B alone and the continuation code everywhere else. The distinction the client acts on is *do I have to leave the app*, so that is what the error code states rather than something to infer from the presence of an `href`. The native Forms SDK path is the boundary case: it pauses the pipeline but renders inline, so it is `insufficient_authorization`. See "Alignment with the IETF draft" below.
+
 **The pipeline continues natively after the web leg.** After resuming, the server returns the next required action — MFA, another form, etc. — or issues the authorization code if the pipeline is complete.
+
+**Descriptors carry `expires_in`. (AMENDED)** Each case has its own TTL and the client is told what it is, in seconds, so an app can distinguish an expired `href` from a broken one and refresh before a user hits a dead page.
+
+---
+
+## Alignment with the IETF draft
+
+`/e/authorize` implements [draft-ietf-oauth-first-party-apps-04](https://datatracker.ietf.org/doc/draft-ietf-oauth-first-party-apps/). The draft defines two error codes that matter here, and they are not interchangeable:
+
+> **`insufficient_authorization`** — "The presented authorization is insufficient, and the authorization server is requesting the client to take additional steps to complete the authorization… continue to make requests to the authorization server until the authorization request is fulfilled and an authorization code returned." MUST be HTTP 403.
+
+> **`redirect_to_web`** — "The request is not able to be fulfilled with **any further direct interaction with the user**. Instead, the client should initiate a **new authorization code flow** so that the user interacts with the authorization server in a web browser."
+
+The draft's usage text points squarely at our cases:
+
+> "The authorization server may choose to interact directly with the user **based on a risk assessment**, the **introduction of a new authentication method not supported in the application**, or to handle an exception flow such as account recovery. To indicate this error to the client, the authorization server returns an error response as defined above with the `redirect_to_web` error code."
+
+Risk assessment is bot detection. An authentication method the app cannot perform natively is federation. So `redirect_to_web` is the code for every leg here that opens a browser.
+
+**Where this stretches the draft, honestly.** The definition above says the request "is not able to be fulfilled with **any further direct interaction with the user**", and our legs *do* come back to `/e/authorize` — a CAPTCHA is followed by a password, federation can be followed by native MFA. The draft is **silent on what happens after the browser interaction**: it never says the client cannot return to the challenge endpoint. So this reading stretches a definition rather than breaking a rule, and it is a decision, not a citation. The alternative — treating every leg as `insufficient_authorization` and letting the `href` imply the browser — was considered and rejected, because it leaves the one thing the client must do differently unstated.
+
+**PKCE is now required at initiate. (AMENDED)**
+
+> "If the client does not include a PKCE `code_challenge` in the initial authorization challenge request, the authorization server MUST NOT return a `request_uri` in the `redirect_to_web` error response, as that would effectively be the same as a PAR request without PKCE."
+
+No example in this document previously sent a `code_challenge`, so as written it could not legally return the `request_uri` it shows. The initiate request now carries `code_challenge` + `code_challenge_method`. Without them the handoff still returns `redirect_to_web` and its `href`; only the `request_uri` is withheld, which matches the draft's own fallback — a client with no `request_uri` starts its own authorization code flow with PKCE.
+
+**A known limit of this shape.** The draft's `request_uri` is consumed per RFC 9126 §4: the client navigates to `/authorize?client_id=…&request_uri=…`. Federation's `href` already is that URL, so a draft-only client works. CAPTCHA and forms live at `/captcha` and `/form`, so for those the actionable instruction is the `href` and the top-level `request_uri` is informational. Folding every leg behind `/authorize?request_uri=…`, dispatched server-side on the record's `type`, would close that gap — the Redis record already carries the type. Worth doing if a spec-compliant SDK ever has to work without understanding `next[]`.
+
+**What the draft leaves to us.** There is no `next[]` array, no action identifiers and no capability negotiation in the draft, and it says so: *"These new error codes are specific to the authorization server's implementation of this specification and are intentionally left out of scope."* That vocabulary is ours to define, which is why the amendments above are decisions rather than corrections.
 
 ---
 
@@ -118,8 +167,8 @@ Redis key: urn:ietf:params:oauth:request_uri:<opaque>
 | --- | --- | --- | --- |
 | Bot Detection / CAPTCHA | `action:interaction:captcha:verify:v1` with `href` | `action:interaction:captcha:verify:v1` | IP/ASN + nonce cookie |
 | Federation (social / enterprise) | N × `authn:federated:<connection>:v1`, one per eligible connection; Path A (HRD resolved): also includes `href`; Path B (ambiguous): no `href` — client echoes chosen action, server returns `href` in second response | `authn:federated:<connection>:v1` | `request_uri` in OAuth2 `state` / SAML `RelayState`; `auth_session_ref` on resume |
-| Native Social | `authn:ns:google:v1` — no `href` | `authn:ns:google:v1` with `idp_artifact` | N/A — fully native |
-| Post-login form (Actions) | `action:interaction:form:v1` with `href` | `action:interaction:form:verify:v1` | `request_uri` in URL; `auth_session_ref` on resume |
+| Native Social | `authn:ns:google:v1` — no `href` | `authn:ns:google:v1` with `idp_artifact` + `idp_artifact_type` | N/A — fully native |
+| Post-login form (Actions) | `action:interaction:form:v1` with `href` | `action:interaction:form:v1` **(AMENDED)** | `request_uri` in URL; `auth_session_ref` on resume |
 | Post-login redirect (Actions) | `action:interaction:web:v1` with `href` | `action:interaction:web:v1` | `request_uri` in URL; `auth_session_ref` on resume |
 
 ---
@@ -146,6 +195,8 @@ POST /e/authorize
   "scope": "openid profile email",
   "audience": "{{audience}}",
   "identifier": "alice@company.com",
+  "code_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+  "code_challenge_method": "S256",
   "capabilities": [
     "action:identify:email:v1",
     "authn:federated:v1"
@@ -155,11 +206,13 @@ POST /e/authorize
 // alice@company.com maps to an enterprise SAML connection via HRD.
 // Server generates the coordination reference immediately and returns href.
 → 403 {
-    "error": "insufficient_authorization",
+    "error": "redirect_to_web",
+    "request_uri": "urn:ietf:params:oauth:request_uri:fed_8xKpQrT2",
     "auth_session": "eyJ...(contains opaque reference, federation-pending)",
     "next": [{
       "action": "authn:federated:company-saml:v1",
-      "href": "https://{{tenant}}.auth0.com/authorize?request_uri=urn:ietf:params:oauth:request_uri:fed_8xKpQrT2"
+      "href": "https://{{tenant}}.auth0.com/authorize?request_uri=urn:ietf:params:oauth:request_uri:fed_8xKpQrT2",
+      "expires_in": 300
     }]
   }
 ```
@@ -211,13 +264,17 @@ POST /e/authorize
 
 // Server validates the action is an eligible option for this auth_session.
 // Generates coordination reference, returns href.
+//
+// This shape is now used for EVERY browser handoff, not just Path B. The request_uri is present
+// because the initiate call carried a PKCE code_challenge; without one it is withheld.
 → 403 {
-    "error": "redirect_to_web", // According to the Spec
-    "request_uri": "urn:ietf:params:oauth:request_uri:fed_8xKpQrT2" // Part of the Spec
+    "error": "redirect_to_web",
+    "request_uri": "urn:ietf:params:oauth:request_uri:fed_8xKpQrT2",
     "auth_session": "eyJ...(federation-pending)",
     "next": [{
       "action": "authn:federated:google-oauth2:v1",
-      "href": "https://{{tenant}}.auth0.com/authorize?request_uri=urn:ietf:params:oauth:request_uri:fed_8xKpQrT2"
+      "href": "https://{{tenant}}.auth0.com/authorize?request_uri=urn:ietf:params:oauth:request_uri:fed_8xKpQrT2",
+      "expires_in": 300
     }]
   }
 ```
@@ -255,7 +312,8 @@ POST /e/authorize
 → 403 { "next": [{ "action": "action:challenge:oob:v1" }] }
 
 // If post-login form required:
-→ 403 { "next": [{ "action": "action:interaction:form:v1", "href": "..." }] }
+→ 403 { "error": "redirect_to_web", "request_uri": "urn:...",
+         "next": [{ "action": "action:interaction:form:v1", "href": "...", "expires_in": 600 }] }
 
 // If pipeline complete:
 → 200 { "authorization_code": "eyJ..." }
@@ -280,14 +338,20 @@ POST /e/authorize
     "next": [{ "action": "authn:ns:google:v1" }]   // no href
   }
 
-// App authenticates natively with Google SDK, receives access_token
-// It depends on the Native SDKs, might be id_token or another artifact
+// App authenticates natively with Google SDK, receives an access token.
+//
+// AMENDED: this was "id_token": "<google_access_token>" — a field named for an ID token carrying
+// an access token, and hedged in prose as "might be id_token or another artifact". The three
+// providers do not return the same kind of thing, so no single token-shaped name is honest:
+// Apple returns an authorization code. The type therefore travels WITH the artifact rather than
+// being inferred from the action id, which would break the moment a provider returns two kinds.
 
 POST /e/authorize
 {
   "auth_session": "eyJ...",
   "action": "authn:ns:google:v1",
-  "id_token": "<google_access_token>",
+  "idp_artifact": "<google_access_token>",
+  "idp_artifact_type": "urn:ietf:params:oauth:token-type:access_token"
 }
 
 // Continue into the pipelien till completion
@@ -296,13 +360,22 @@ POST /e/authorize
 → 403 { "next": [{ "action": "action:challenge:oob:v1" }] }
 
 // If post-login form required:
-→ 403 { "next": [{ "action": "action:interaction:form:v1", "href": "..." }] }
+→ 403 { "error": "redirect_to_web", "request_uri": "urn:...",
+         "next": [{ "action": "action:interaction:form:v1", "href": "...", "expires_in": 600 }] }
 
 // If pipeline complete:
 → 200 { "authorization_code": "eyJ..." }
 ```
 
-> **Provider artifacts:** Google → access token · Apple → authorization code (`http://auth0.com/oauth/token-type/apple-authz-code`) · Facebook → access token
+> **Provider artifacts and their `idp_artifact_type`:**
+>
+> | Provider | Artifact | `idp_artifact_type` |
+> | --- | --- | --- |
+> | Google | access token | `urn:ietf:params:oauth:token-type:access_token` |
+> | Facebook | access token | `urn:ietf:params:oauth:token-type:access_token` |
+> | Apple | authorization code | `http://auth0.com/oauth/token-type/apple-authz-code` |
+>
+> Access tokens use the URN [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693) already registers, rather than a parallel Auth0-namespaced one. Apple's authorization code has no registered equivalent, so it keeps the proprietary URN. **The server rejects a mismatch** — claiming Apple's URN for a Google artifact is a `400`, which is the point of making the type explicit rather than inferring it.
 
 ---
 
@@ -321,21 +394,26 @@ POST /e/authorize
 }
 
 → 403 {
-    "error": "insufficient_authorization",
+    "error": "redirect_to_web",
+    "request_uri": "urn:ietf:params:oauth:request_uri:form_9tBrKx",
     "auth_session": "eyJ...(form-pending)",
     "next": [{
       "action": "action:interaction:form:v1",
-      "href": "https://{{tenant}}.auth0.com/form?request_uri=urn:ietf:params:oauth:request_uri:form_9tBrKx"
+      "href": "https://{{tenant}}.auth0.com/form?request_uri=urn:ietf:params:oauth:request_uri:form_9tBrKx",
+      "expires_in": 600
     }]
   }
 
 // App opens WebView. User fills and submits form. Auth0 processes via Forms API.
 // Redirects to: myapp://callback  ← no tokens
+//
+// AMENDED: this was action:interaction:form:verify:v1, an action the server never offered.
+// Resume on the action that was in next[], like every other leg.
 
 POST /e/authorize
 {
   "auth_session": "eyJ...(form-pending)",
-  "action": "action:interaction:form:verify:v1"
+  "action": "action:interaction:form:v1"
 }
 
 → 200 { "authorization_code": "eyJ..." }
@@ -354,9 +432,13 @@ POST /e/authorize
 }
 
 → 403 {
+    "error": "redirect_to_web",
+    "request_uri": "urn:ietf:params:oauth:request_uri:web_5mNqPz",
+    "auth_session": "eyJ...(redirect-pending)",
     "next": [{
       "action": "action:interaction:web:v1",
-      "href": "https://{{tenant}}.auth0.com/continue?request_uri=urn:ietf:params:oauth:request_uri:web_5mNqPz&redirect_to=https://myapp.com/verify"
+      "href": "https://{{tenant}}.auth0.com/continue?request_uri=urn:ietf:params:oauth:request_uri:web_5mNqPz&redirect_to=https://myapp.com/verify",
+      "expires_in": 600
     }]
   }
 
@@ -434,7 +516,7 @@ The `auth_session` encodes **where the pipeline is**, not the web-leg artifact. 
 
 ## Open Questions
 
-1. **Resume action name for federation** — when the app resumes it sends the connection-specific action (e.g., `"action": "authn:federated:google-oauth2:v1"`). Confirm this is the agreed convention, or whether resume should use a distinct action like `action:interaction:federation:v1` to keep `authn:*` strictly for initial capability declaration.
+1. ~~**Resume action name for federation**~~ — **RESOLVED.** The app resumes on the connection-specific action it was offered, `authn:federated:google-oauth2:v1`. The alternative floated here — a distinct `action:interaction:federation:v1`, keeping `authn:*` strictly for capability declaration — was rejected because it reintroduces the very split being removed from forms: a resume id that differs from the offered id, which forces `next[]` to stop being a literal allow-list and become a mapping table. One rule for all four legs beats a tidier namespace.
 2. **Parameters in the federation** `href` — current design passes only `request_uri`. Confirm whether Auth0's `/authorize` can accept `request_uri` as a standalone parameter or still requires `client_id` explicitly. If `client_id` is required, add it to the href — the Redis record remains the source of truth.
 3. **HRD without an identifier** — for clients specifying `connection` explicitly, confirm `authn:federated:<connection>:v1` is returned in `next[]` when `conn !== null` is satisfied by the explicit param.
 4. `auth_session` TTL during the federation web leg — an enterprise IDP login can be slow. Define the TTL policy and align with the CAPTCHA TTL policy.

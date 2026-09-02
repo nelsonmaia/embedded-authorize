@@ -1,5 +1,26 @@
 # Bot Detection Challenge for Embedded Authorize
 
+> **Amended 2026-09-02 to the settled contract.** This copy differs from the Confluence original
+> where the documents contradicted each other or [draft-ietf-oauth-first-party-apps-04](https://datatracker.ietf.org/doc/draft-ietf-oauth-first-party-apps/).
+> Each change is marked **AMENDED** inline with its reason. The machine-readable record is
+> `DECISIONS` in `src/data/spec.js`; the simulator is held to it by `tests/webflows.test.js`.
+>
+> | Changed | From | To |
+> | --- | --- | --- |
+> | CAPTCHA challenge responses | `error: insufficient_authorization` | `error: redirect_to_web` + top-level `request_uri` |
+> | Initiate request | no PKCE shown | `code_challenge` + `code_challenge_method` REQUIRED to receive a `request_uri` |
+> | CAPTCHA descriptors | TTL held in Redis only | `expires_in: 90` returned to the client |
+>
+> This page's prose was right and its HTTP examples were wrong. It argued that `redirect_to_web`
+> is the spec-aligned mechanism, then showed every response as `insufficient_authorization`. The
+> examples now match the argument, and the same rule is applied across federation and post-login
+> forms in the sibling REDIR page.
+>
+> **Unchanged:** the responses that do NOT open a browser. A silent Action deny, an MFA step-up,
+> and a Block-mode rejection all stay `insufficient_authorization` — they keep the user in the app,
+> and the oracle-free shape of the deny path depends on it being indistinguishable from a wrong
+> password.
+
 ## Context
 
 The embedded authorize endpoint (`/e/authorize`) is used by **public clients** as defined by the [OAuth 2.0 for First-Party Applications](https://datatracker.ietf.org/doc/draft-ietf-oauth-first-party-apps/) specification. Public clients cannot hold static credentials, which exposes them to attacks such as **client impersonation** and **credential stuffing**. While [App Attestation](https://oktainc.atlassian.net/wiki/spaces/IAMPS/pages/986220312/App+Attestation+Product+Architecture+Overview) mitigates some of this risk, its implementation requires changes to the client (native app binary and SDK versions), adding significant adoption complexity for customers.
@@ -48,13 +69,29 @@ As documented in the [Identity Security + Embedded Authorize discovery](https://
 - Validating that ML models perform adequately on embedded traffic (which uses different log event type codes than UL — retraining may be required)
 - Deciding the native challenge mechanism (CAPTCHA SDK, attestation, or redirect\_to\_web)
 
-**Important distinction:** Bot detection and CAPTCHA are two separate things. Bot detection is the ML-based signal assessment. CAPTCHA is one possible response action when the assessment fires. The solution below focuses on making the CAPTCHA *response* work in embedded flows via `redirect_to_web` without breaking the session or forcing credential re-entry.
+**Important distinction:** Bot detection and CAPTCHA are two separate things. Bot detection is the ML-based signal assessment. CAPTCHA is one possible response action when the assessment fires. The solution below focuses on making the CAPTCHA *response* work in embedded flows via the escape-to-web handoff without breaking the session or forcing credential re-entry.
 
 ## `redirect_to_web` in the OAuth First-Party Apps Spec
 
-The [OAuth 2.0 for First-Party Applications](https://datatracker.ietf.org/doc/draft-ietf-oauth-first-party-apps/) spec explicitly defines `redirect_to_web` (HTTP 403, `"error": "redirect_to_web"`) as the mechanism for cases where the authorization server cannot complete the flow natively. The response may include a `request_uri` (via PAR / [RFC 9126](https://www.rfc-editor.org/rfc/rfc9126)); the client opens a system browser to `/authorize?request_uri=...`.
+The [OAuth 2.0 for First-Party Applications](https://datatracker.ietf.org/doc/draft-ietf-oauth-first-party-apps/) draft defines `redirect_to_web` (HTTP 403, `"error": "redirect_to_web"`) and names this exact situation in its usage text:
 
-This is the spec-aligned path for surfacing a CAPTCHA challenge in embedded flows. Critically, when implemented through `auth_session`, the `redirect_to_web` handoff **preserves session state** — meaning the CAPTCHA page is isolated to just the challenge, and the user does not re-enter credentials. This is fundamentally different from the current Auth0 fallback, which sends users back to a full Universal Login page.
+> "The authorization server may choose to interact directly with the user **based on a risk assessment**, the introduction of a new authentication method not supported in the application, or to handle an exception flow such as account recovery. To indicate this error to the client, the authorization server returns an error response as defined above with the `redirect_to_web` error code."
+
+Risk assessment is bot detection. The response may include a `request_uri` (via PAR / [RFC 9126](https://www.rfc-editor.org/rfc/rfc9126)); the client opens a system browser to complete the interaction.
+
+This is the spec-aligned path for surfacing a CAPTCHA challenge in embedded flows. Critically, when implemented through `auth_session`, the handoff **preserves session state** — the CAPTCHA page is isolated to just the challenge, and the user does not re-enter credentials. This is fundamentally different from the current Auth0 fallback, which sends users back to a full Universal Login page.
+
+**(AMENDED) Where this stretches the draft, said plainly.** The draft's *definition* of the code is narrower than its usage text: it says the request "is not able to be fulfilled with **any further direct interaction with the user**", and the CAPTCHA flow below very much continues — the user solves the challenge, comes back, and then enters a password. The draft is **silent on what happens after the browser interaction**; it never says the client cannot return to the challenge endpoint. So this is a deliberate reading of an ambiguous spec, not a citation of a rule. It is recorded as a decision in `DECISIONS` (`src/data/spec.js`), applied identically to federation and post-login forms, and the alternative — treating every handoff as `insufficient_authorization` and letting the presence of an `href` imply the browser — was considered and rejected because it leaves the one thing the client must do differently unstated.
+
+**(AMENDED) PKCE is required to return the reference.**
+
+> "If the client does not include a PKCE `code_challenge` in the initial authorization challenge request, the authorization server MUST NOT return a `request_uri` in the `redirect_to_web` error response, as that would effectively be the same as a PAR request without PKCE."
+
+The initiate call therefore carries `code_challenge` + `code_challenge_method`. Without them the challenge still returns `redirect_to_web` and its `href`; only the top-level `request_uri` is withheld.
+
+**(AMENDED) A known limit.** A draft-only client consumes `request_uri` per RFC 9126 §4 — navigating to `/authorize?client_id=…&request_uri=…`. The CAPTCHA reference resolves at `/captcha`, so for this case the actionable instruction is the `href` and the top-level `request_uri` is informational. Folding the CAPTCHA page behind `/authorize?request_uri=…`, dispatched on the Redis record's type, would close that gap.
+
+**What does NOT change.** Only responses that open a browser carry `redirect_to_web`. The silent Action deny, the MFA step-up, and Block mode all stay `insufficient_authorization` — and the deny path's whole value is that it is byte-identical to a wrong password, which a different error code would destroy.
 
 The same `request_uri` coordination reference pattern is used across all redirect-to-web cases — CAPTCHA, federation, and post-login Actions forms. See [Redirect to Web Flows in Embedded Authorization](https://oktainc.atlassian.net/wiki/spaces/IAMEA/pages/1046249511/Redirect+to+Web+Flows+in+Embedded+Authorization) for the full architecture and rationale behind this design.
 
@@ -136,6 +173,8 @@ POST /e/authorize
   "scope": "{{scope}}",
   "audience": "{{audience}}",
   "identifier": "alice@example.com",
+  "code_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+  "code_challenge_method": "S256",
   "capabilities": [
     "action:identify:email:v1",
     "action:verify:password:v1",
@@ -148,11 +187,13 @@ POST /e/authorize
 // so the server can locate the record when the app resumes.
 
 → 403 {
-    "error": "insufficient_authorization",
+    "error": "redirect_to_web",
+    "request_uri": "urn:ietf:params:oauth:request_uri:tk6TqMkJ_-kNGZxlYgGc5A",
     "auth_session": "eyJ...(captcha-pending)",
     "next": [{
       "action": "action:interaction:captcha:verify:v1",
-      "href": "https://{{tenant}}.auth0.com/captcha?request_uri=urn:ietf:params:oauth:request_uri:tk6TqMkJ_-kNGZxlYgGc5A"
+      "href": "https://{{tenant}}.auth0.com/captcha?request_uri=urn:ietf:params:oauth:request_uri:tk6TqMkJ_-kNGZxlYgGc5A",
+      "expires_in": 90
     }]
   }
 
@@ -211,12 +252,14 @@ POST /e/authorize
 
 // If password is wrong — CAPTCHA clearance is consumed; attacker must re-solve CAPTCHA.
 → 403 {
-    "error": "insufficient_authorization",
+    "error": "redirect_to_web",
     "error_description": "invalid_identifier_or_password",
+    "request_uri": "urn:ietf:params:oauth:request_uri:newRef9xKmPqRt_2yBvZ",
     "auth_session": "eyJ...(captcha-required)",
     "next": [{
       "action": "action:interaction:captcha:verify:v1",
-      "href": "https://{{tenant}}.auth0.com/captcha?request_uri=urn:ietf:params:oauth:request_uri:newRef9xKmPqRt_2yBvZ"
+      "href": "https://{{tenant}}.auth0.com/captcha?request_uri=urn:ietf:params:oauth:request_uri:newRef9xKmPqRt_2yBvZ",
+      "expires_in": 90
     }]
   }
 
@@ -349,11 +392,13 @@ POST /e/authorize
 // — Action calls api.botDetection.challenge() —
 // Hands off to the Adaptive CAPTCHA flow. Response is identical to what Adaptive returns.
 → 403 {
-    "error": "insufficient_authorization",
+    "error": "redirect_to_web",
+    "request_uri": "urn:ietf:params:oauth:request_uri:tk6TqMkJ_-kNGZxlYgGc5A",
     "auth_session": "eyJ...(captcha-pending)",
     "next": [{
       "action": "action:interaction:captcha:verify:v1",
-      "href": "https://{{tenant}}.auth0.com/captcha?request_uri=urn:ietf:params:oauth:request_uri:tk6TqMkJ_-kNGZxlYgGc5A"
+      "href": "https://{{tenant}}.auth0.com/captcha?request_uri=urn:ietf:params:oauth:request_uri:tk6TqMkJ_-kNGZxlYgGc5A",
+      "expires_in": 90
     }]
   }
 // From here: client opens browser, CAPTCHA is solved, auth_session advances server-side,
@@ -401,7 +446,7 @@ The Adaptive flow described above assumes a native client opening a system brows
 
 The SDK would detect from the platform context (native vs. web) which path to take:
 
-- **Native SDK** — follows the `redirect_to_web` flow described above: injects cookie (iOS), opens system browser, server-side Redis marking, `captcha-done` callback
+- **Native SDK** — follows the escape-to-web flow described above: injects cookie (iOS), opens system browser, server-side Redis marking, `captcha-done` callback
 - **Web SDK** — renders the CAPTCHA UI component inline in the page; the CAPTCHA result is POSTed directly to Auth0 from the same browser context, auth\_session advances server-side, flow resumes without any browser navigation
 
 This keeps the embedded experience fully in-page for web customers while preserving the same server-side marking model.
@@ -421,4 +466,4 @@ App Attestation is not a response mode — it is an upstream gate that reduces t
 
 ## Resources
 
-- [Discovery: Embedded Authorize + CAPTCHA POC](https://oktainc.atlassian.net/wiki/spaces/A0IS/pages/1049198657/Discovery+Embedded+Authorize+CAPTCHA+POC) — proof of concept validating the `redirect_to_web` model proposed in this page.
+- [Discovery: Embedded Authorize + CAPTCHA POC](https://oktainc.atlassian.net/wiki/spaces/A0IS/pages/1049198657/Discovery+Embedded+Authorize+CAPTCHA+POC) — proof of concept validating the escape-to-web model proposed in this page.

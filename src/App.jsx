@@ -1,46 +1,64 @@
 /**
- * Two things you can be doing, and they are independent:
+ * Three places you can be, and only one at a time:
  *
- *   End state   — what the protocol does once it is finished. Nothing leaves the browser.
- *   Live tenant — what a real tenant does today.
+ *   End state     — what the protocol does once it is finished. Nothing leaves the browser.
+ *   Live tenant   — what a real tenant does today.
+ *   API Spec      — what each call takes and returns, with nothing running.
  *
- * Neither falls back to the other: a failing live call is shown failing, because a spec-shaped
- * answer would mean you were no longer testing your tenant.
+ * The first two never fall back to each other: a failing live call is shown failing, because a
+ * spec-shaped answer would mean you were no longer testing your tenant.
  */
 import { useEffect, useMemo, useState } from 'react';
-import { FlaskConical, Radio } from 'lucide-react';
+import { BookText, FlaskConical, Radio } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Button } from '@/components/ui/button';
+import { ThemeToggle } from '@/components/ThemeToggle.jsx';
 import { ConsoleView } from '@/views/ConsoleView.jsx';
 import { ContractView } from '@/views/ContractView.jsx';
 import { DEFAULT_FLOW_ID, flowById } from '@/data/flows.js';
 
 const TENANT_KEY = 'eplay-tenant-v2';
 
+/**
+ * The tenant the live-mode findings in this repo were recorded against, prefilled so live mode is
+ * one click rather than a hunt through the dashboard. The client_id is safe to ship: /e/authorize
+ * serves public clients, which by definition hold no secret.
+ */
+const DEFAULT_TENANT = {
+  domain: 'nelson.jp.auth0.com',
+  clientId: 'yQjhZg0l3xGZTfDdCMYIdqQVEs0i020m',
+  connection: 'Username-Password-Authentication',
+  audience: '',
+  scope: 'openid profile email',
+};
+
 function loadTenant() {
   try {
     const v = JSON.parse(sessionStorage.getItem(TENANT_KEY) || '{}');
     return {
-      domain: v.domain || '',
-      clientId: v.clientId || '',
-      connection: v.connection || 'Username-Password-Authentication',
-      audience: v.audience || '',
-      scope: v.scope || 'openid profile email',
+      domain: v.domain || DEFAULT_TENANT.domain,
+      clientId: v.clientId || DEFAULT_TENANT.clientId,
+      connection: v.connection || DEFAULT_TENANT.connection,
+      audience: v.audience || DEFAULT_TENANT.audience,
+      scope: v.scope || DEFAULT_TENANT.scope,
     };
   } catch {
-    return {
-      domain: '',
-      clientId: '',
-      connection: 'Username-Password-Authentication',
-      audience: '',
-      scope: 'openid profile email',
-    };
+    return { ...DEFAULT_TENANT };
   }
 }
 
 export default function App() {
-  const [mode, setMode] = useState('spec');
-  const [view, setView] = useState('console');
+  /**
+   * One control, three destinations.
+   *
+   * Mode (spec/live) and view (console/contract) used to be separate widgets, which meant the
+   * mode tabs stayed lit while you were reading the contract — highlighting a choice that had no
+   * effect on what was on screen. They are mutually exclusive places to be, so they are one tab
+   * strip: exactly one thing is ever highlighted, and it is where you are.
+   */
+  const [nav, setNav] = useState('spec');
+  const view = nav === 'contract' ? 'contract' : 'console';
+  const mode = nav === 'live' ? 'live' : 'spec';
+
   const [flowId, setFlowId] = useState(DEFAULT_FLOW_ID);
   const [variantId, setVariantId] = useState(null);
   const [tenant, setTenant] = useState(loadTenant);
@@ -70,7 +88,7 @@ export default function App() {
 
         <div className="flex-1" />
 
-        <Tabs value={mode} onValueChange={setMode}>
+        <Tabs value={nav} onValueChange={setNav}>
           <TabsList>
             <TabsTrigger value="spec">
               <FlaskConical /> End state
@@ -78,22 +96,22 @@ export default function App() {
             <TabsTrigger value="live">
               <Radio /> Live tenant
             </TabsTrigger>
+            <TabsTrigger value="contract">
+              <BookText /> API Spec
+            </TabsTrigger>
           </TabsList>
         </Tabs>
 
-        <Button
-          variant={view === 'contract' ? 'secondary' : 'ghost'}
-          size="sm"
-          onClick={() => setView(view === 'contract' ? 'console' : 'contract')}
-        >
-          {view === 'contract' ? 'Back to console' : 'Full contract'}
-        </Button>
+        <ThemeToggle />
       </header>
 
       <div className="border-b bg-muted/20 px-6 py-2 text-xs text-muted-foreground">
-        {mode === 'spec'
-          ? 'How each flow will behave once it is fully built. Simulated locally — nothing leaves your browser.'
-          : 'What your tenant does right now. Real calls, real responses — including where it is not finished yet.'}
+        {nav === 'spec' &&
+          'How each flow will behave once it is fully built. Simulated locally — nothing leaves your browser.'}
+        {nav === 'live' &&
+          'What your tenant does right now. Real calls, real responses — including where it is not finished yet.'}
+        {nav === 'contract' &&
+          'The specification for POST /e/authorize: every parameter, every action, every response. Nothing runs here.'}
       </div>
 
       <main className="min-h-0 flex-1 overflow-y-auto">

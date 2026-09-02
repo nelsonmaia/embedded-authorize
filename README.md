@@ -18,10 +18,10 @@ npm run dev            # → http://localhost:5177
 | Script | What it does |
 |---|---|
 | `npm run dev` | Dev server on :5177, including the tenant proxy |
-| `npm test` | 30 assertions: data fidelity, transports, proxy allowlist + log hygiene |
+| `npm test` | 112 assertions: data fidelity, the state machine, transports, proxy allowlist + log hygiene |
 | `npm run build` | Production bundle (end-state mode only — live needs the dev server) |
 | `npm run extract` | Regenerate `src/data/signupPrd.generated.json` from the committed source |
-| `node tests/e2e-browser.mjs` | 31 browser checks over CDP. Needs `npm run dev` running. |
+| `node tests/e2e-browser.mjs` | 54 browser checks over CDP. Needs `npm run dev` running. |
 
 ## Two modes, deliberately independent
 
@@ -30,7 +30,8 @@ content sets, both selected from the same dropdown:
 
 - *Sign up* — 15 connection configurations (email / phone / both, × no / optional / required
   password) and their 26 variants, replayed from 200 modelled request/response pairs.
-- *Sign in* — 14 scenarios (OTP, password, MFA, passkey, federation), **simulated**: the state
+- *Sign in* — 30 scenarios (OTP, password, MFA, passkey, federation, bot detection, post-login
+  interactions, and the protocol's own error shapes), **simulated**: the state
   machine in `src/engine/engine.js` runs, so a wrong OTP really fails, the attempt cap really trips,
   and an action outside `next[]` is really refused. Correct OTP is `123456`; correct password is
   `Abcd@1234`.
@@ -88,7 +89,12 @@ middleware can go.
 
 shadcn/ui components (`src/components/ui/`), Tailwind, Radix primitives. These are vendored
 copy-in sources, as shadcn intends — `components.json` is present so `npx shadcn@latest add <x>`
-works for anything new. Dark theme only; the primary is the Auth0 orange.
+works for anything new. The primary is the Auth0 orange.
+
+Light, dark and system themes. Both palettes define every token — a token present in only one is a
+colour that disappears when the theme flips, which a test asserts against. "System" keeps following
+the OS after you pick it rather than resolving once. An inline script in `index.html` applies the
+class before first paint; doing it in React flashes the wrong theme on every load.
 
 Note for anyone writing tests: Radix activates tabs and selects on real pointer events and ignores
 a synthetic `el.click()`. `tests/e2e-browser.mjs` has a `clickReal()` helper that dispatches trusted
@@ -120,25 +126,27 @@ Two things are **derived**, and flagged as such wherever they appear:
 
 | Path | What it is |
 |---|---|
-| `src/App.jsx` | Shell: End state / Live tenant, and the contract view |
+| `src/App.jsx` | Shell: one tab strip over End state / Live tenant / API Spec |
 | `src/views/ConsoleView.jsx` | The transcript of request/response pairs |
-| `src/views/ContractView.jsx` | Browse the contract without running a flow |
+| `src/views/ContractView.jsx` | The API Spec page: parameters, actions, responses, error vocabulary |
+| `src/data/specMarkdown.js` | The same spec as a Markdown file, for **Export .md** |
+| `src/components/ThemeToggle.jsx` | Light / dark / system |
 | `src/components/ExchangeCard.jsx` | One call: editable request + its response |
 | `src/components/JsonCode.jsx` | Read-only view, and the always-editable highlighted editor |
 | `src/components/NextBar.jsx` | `next[]` as the gate on the following call |
 | `src/components/FlowPicker.jsx` | The one dropdown |
-| `src/data/flows.js` | Both content sets flattened into one labelled catalogue |
+| `src/data/flows.js` | Both content sets flattened into one catalogue, plus the picker's filters |
 | `src/transports/cannedTransport.js` | Replays the modelled signup pairs |
 | `src/transports/simulatorTransport.js` | Wraps `engine.js` for sign-in flows |
 | `src/transports/liveTransport.js` | Real HTTP via the dev middleware |
 | `src/transports/types.js` | The one interface all three satisfy |
-| `src/data/spec.js` | The contract as data: 27 capabilities, errors, connection presets, known gaps |
+| `src/data/spec.js` | The contract as data: the endpoint, 25 capabilities, errors, connection presets, decisions, known gaps |
 | `src/engine/engine.js` | The sign-in state machine: negotiation, `next` enforcement, session rotation, decoys |
 | `scripts/vite-plugin-tenant-proxy.js` | The dev-only tenant proxy |
 
 ## Where the two models disagree
 
-The contract view has a section for this. The signup and sign-in models were written separately and
+The signup and sign-in models were written separately and
 describe some calls differently — signup sends `phone` where the registry declares `phone_number`,
 and signup never sends `index` on `challenge:phone` although the registry marks it required (the
 registry's entry is the *MFA* challenge, signup's is a just-claimed number, so they may legitimately
@@ -157,6 +165,57 @@ format, which is `haze******@okta****`, not the `j***e@e****e.com` the D2 RFD sh
 `usxx@exxxxxx.com` the signup model shows. Three conventions, one protocol; that is why the canned
 transport does not re-mask an unedited payload.
 
-Six deviations from spec are listed in the contract view. Two matter beyond this tool:
+Deviations are recorded in `KNOWN_GAPS`. Two are things the tenant does that the spec does not:
 `auth_session` replay is not rejected (so `challenge:email` can be replayed to re-send OTPs), and an
-out-of-order action returns `500` rather than `invalid_request`.
+out-of-order action returns `500` rather than `invalid_request`. Two more come from the IETF draft:
+`auth_session` is not device-bound, and web-leg lifetimes never reach the client.
+
+**Spec mode shows the end state, not current behaviour.** It does not reproduce tenant bugs — a
+replayed session is refused with `invalid_session`, and an out-of-order action gets
+`invalid_request` with `next` restated. The deviations above are recorded in `KNOWN_GAPS` so
+they are visible without being taught as the design. Live mode is where you see what a tenant
+actually does today.
+
+The API Spec page is the wire contract only — parameters, actions, responses, error vocabulary.
+`DECISIONS` and `KNOWN_GAPS` are the reasoning behind it and live in `src/data/spec.js`.
+
+## The normative floor
+
+`/e/authorize` implements [draft-ietf-oauth-first-party-apps-04](https://datatracker.ietf.org/doc/draft-ietf-oauth-first-party-apps/)
+(1 July 2026). Where the draft speaks it wins; the RFDs are Auth0 layered on top. Where it is
+silent, it says so explicitly — *"These new error codes are specific to the authorization server's
+implementation of this specification and are intentionally left out of scope."* There is no `next`
+array, no action identifiers and no capability negotiation in the draft; that vocabulary is ours.
+
+`DECISIONS` in `src/data/spec.js` records every place two documents described the same event two
+ways, what was chosen, and on whose authority — `basis: 'draft'` where the draft settled it,
+`basis: 'ours'` where it was a judgement call. Five so far:
+
+| Decision | Basis | Overrides |
+| --- | --- | --- |
+| A paused leg resumes on the action it was offered under | ours | FORMS resumes on `form:verify:v1`, never offered; that id is retired |
+| Native social posts `idp_artifact` + `idp_artifact_type` | ours | REDIR's example sends `id_token` holding an access token |
+| The native form binding is `journey_id`, not `state` | ours | FORMS names it `state`; RFC 6749 already owns that word |
+| Path A stays — an href can ride on the first response | ours | — (both REDIR paths kept) |
+| A pause that opens a browser is `redirect_to_web` + `request_uri` | ours | REDIR used it on Path B only; BOT's examples never used it |
+| No PKCE at initiate means no `request_uri` | **draft** | no document sends a `code_challenge` |
+
+The error-code rule is a judgement call, and worth stating why. The draft's *usage* text names
+these cases — *"based on a risk assessment, the introduction of a new authentication method not
+supported in the application"* — while its *definition* says the request "is not able to be
+fulfilled with any further direct interaction with the user", which our legs contradict by coming
+back to `/e/authorize`. The draft is **silent on what follows the browser interaction**, so this
+stretches an ambiguous definition rather than breaking a rule. The alternative — one continuation
+code, with `href` implying the browser — was rejected because it leaves the one thing the client
+must do differently unstated.
+
+Only the PKCE rule is normative: *"the authorization server MUST NOT return a `request_uri`…"*
+unless the initiate call carried a `code_challenge`. Delete `code_challenge` from the initiate
+payload in the console and the `request_uri` disappears while the handoff still works.
+
+Two consequences worth knowing. The native Forms SDK path stays `insufficient_authorization` —
+it pauses the pipeline but opens no browser, so the same action id comes back under two different
+error codes depending on render path. And a draft-only client consumes `request_uri` per RFC 9126
+§4 by navigating to `/authorize?request_uri=…`; that works for federation, whose `href` already
+is that URL, but CAPTCHA and forms resolve at `/captcha` and `/form`, so for those the actionable
+instruction is the `href`. Folding every leg behind `/authorize?request_uri=…` would close the gap.
