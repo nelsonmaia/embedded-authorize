@@ -1,0 +1,12 @@
+{
+  "_comment": "Provenance for the sibling .md, captured at fetch time. The .md holds only the page body (it diffs far better that way), so the Confluence envelope metadata is recorded here instead. Update both together when re-fetching.",
+  "id": "1068894784",
+  "title": "PRD: Embedded Authorize - Signup",
+  "space": "IAMEA",
+  "url": "https://oktainc.atlassian.net/wiki/spaces/IAMEA/pages/1068894784",
+  "version": 12,
+  "versionMessage": "Reword the Overview intro paragraph (identifiers + authenticators + password framing)",
+  "updatedAt": "2026-09-01T11:48:29.030Z",
+  "docStatus": "DRAFT",
+  "fetchedAt": "2026-09-01T00:00:00.000Z"
+}

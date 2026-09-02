@@ -1,0 +1,70 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* shadcn/ui theme tokens — dark only, with Auth0 orange as the primary. */
+@layer base {
+  :root {
+    --background: 230 16% 6%;
+    --foreground: 228 25% 95%;
+    --card: 230 14% 10%;
+    --card-foreground: 228 25% 95%;
+    --popover: 230 14% 9%;
+    --popover-foreground: 228 25% 95%;
+    --primary: 16 88% 55%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 230 13% 15%;
+    --secondary-foreground: 228 20% 90%;
+    --muted: 230 13% 14%;
+    --muted-foreground: 228 10% 62%;
+    --accent: 230 13% 17%;
+    --accent-foreground: 228 25% 95%;
+    --destructive: 358 85% 64%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 230 13% 18%;
+    --input: 230 13% 20%;
+    --ring: 16 88% 55%;
+    --ok: 158 62% 52%;
+    --warn: 38 92% 55%;
+    --radius: 0.6rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, system-ui, sans-serif;
+  }
+}
+
+/* JSON syntax colours, shared by the read-only view and the editor's backdrop. */
+.tok-key { color: hsl(225 100% 72%); }
+.tok-str { color: hsl(var(--ok)); }
+.tok-num { color: hsl(var(--warn)); }
+.tok-lit { color: hsl(265 90% 78%); }
+.tok-pun { color: hsl(228 10% 50%); }
+
+/* The editor and its highlighted backdrop must agree on metrics to the pixel. */
+.code-metrics {
+  font-family: ui-monospace, 'SF Mono', Menlo, 'JetBrains Mono', Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  tab-size: 2;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 5px;
+  border: 2px solid hsl(var(--background));
+}
