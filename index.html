@@ -3,7 +3,24 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- Relative, not /auth0-favicon.svg: there is no public/ directory, so a root-absolute path
+         would resolve in dev and 404 in the build. This way Vite emits it as a hashed asset. -->
+    <link rel="icon" type="image/svg+xml" href="./auth0-favicon.svg" />
     <title>Embedded Authorize Console · /e/authorize</title>
+    <script>
+      // Applied before first paint. Doing this in React would flash the wrong theme on every load.
+      (function () {
+        try {
+          var saved = localStorage.getItem('eplay-theme') || 'system';
+          var dark =
+            saved === 'dark' ||
+            (saved === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.classList.toggle('dark', dark);
+        } catch (e) {
+          document.documentElement.classList.add('dark');
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

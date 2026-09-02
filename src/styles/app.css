@@ -2,9 +2,43 @@
 @tailwind components;
 @tailwind utilities;
 
-/* shadcn/ui theme tokens — dark only, with Auth0 orange as the primary. */
+/* shadcn/ui theme tokens. Light is the bare :root; dark is applied by a `.dark` class on <html>,
+   which matches tailwind.config.js `darkMode: ['class']`. Both palettes define every token — a
+   token that exists in only one theme is a colour that disappears in the other. */
 @layer base {
   :root {
+    --background: 0 0% 100%;
+    --foreground: 230 18% 12%;
+    --card: 0 0% 100%;
+    --card-foreground: 230 18% 12%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 230 18% 12%;
+    /* Darker than the dark-theme orange: the same hue fails contrast on white. */
+    --primary: 16 84% 45%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 230 16% 95%;
+    --secondary-foreground: 230 18% 22%;
+    --muted: 230 16% 96%;
+    --muted-foreground: 230 8% 40%;
+    --accent: 230 16% 92%;
+    --accent-foreground: 230 18% 15%;
+    --destructive: 358 68% 45%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 230 14% 88%;
+    --input: 230 14% 82%;
+    --ring: 16 84% 45%;
+    --ok: 158 68% 28%;
+    --warn: 30 88% 36%;
+
+    --tok-key: 225 72% 42%;
+    --tok-lit: 268 68% 45%;
+    --tok-pun: 230 8% 52%;
+
+    --radius: 0.6rem;
+    color-scheme: light;
+  }
+
+  .dark {
     --background: 230 16% 6%;
     --foreground: 228 25% 95%;
     --card: 230 14% 10%;
@@ -26,7 +60,12 @@
     --ring: 16 88% 55%;
     --ok: 158 62% 52%;
     --warn: 38 92% 55%;
-    --radius: 0.6rem;
+
+    --tok-key: 225 100% 72%;
+    --tok-lit: 265 90% 78%;
+    --tok-pun: 228 10% 50%;
+
+    color-scheme: dark;
   }
 
   * {
@@ -43,12 +82,13 @@
   }
 }
 
-/* JSON syntax colours, shared by the read-only view and the editor's backdrop. */
-.tok-key { color: hsl(225 100% 72%); }
+/* JSON syntax colours, shared by the read-only view and the editor's backdrop. Every one resolves
+   through a token so both palettes stay legible — a hard-coded pastel is invisible on white. */
+.tok-key { color: hsl(var(--tok-key)); }
 .tok-str { color: hsl(var(--ok)); }
 .tok-num { color: hsl(var(--warn)); }
-.tok-lit { color: hsl(265 90% 78%); }
-.tok-pun { color: hsl(228 10% 50%); }
+.tok-lit { color: hsl(var(--tok-lit)); }
+.tok-pun { color: hsl(var(--tok-pun)); }
 
 /* The editor and its highlighted backdrop must agree on metrics to the pixel. */
 .code-metrics {

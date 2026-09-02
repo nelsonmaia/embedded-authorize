@@ -135,6 +135,12 @@ export function ExchangeCard({
         </div>
       </div>
 
+      {result?.note && (
+        <div className="whitespace-pre-line border-t bg-muted/30 px-4 py-2.5 text-xs leading-relaxed text-muted-foreground">
+          {result.note}
+        </div>
+      )}
+
       {result?.gap && (
         <div className="border-t border-destructive/25 bg-destructive/10 px-4 py-2.5 text-xs leading-relaxed text-destructive">
           <span className="font-semibold">Known gap</span> — {result.gap}

@@ -8,11 +8,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, CircleSlash, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ExchangeCard } from '@/components/ExchangeCard.jsx';
+import { BrowserLeg } from '@/components/BrowserLeg.jsx';
 import { NextBar } from '@/components/NextBar.jsx';
 import { TenantBar } from '@/components/TenantBar.jsx';
 import { FlowPicker } from '@/components/FlowPicker.jsx';
 import { cannedTransport } from '@/transports/cannedTransport.js';
-import { simulatorTransport } from '@/transports/simulatorTransport.js';
+import { simulatorTransport, initiateSeed } from '@/transports/simulatorTransport.js';
 import { liveTransport } from '@/transports/liveTransport.js';
 import { flowById } from '@/data/flows.js';
 import { LIVE_CAPABILITIES } from '@/data/spec.js';
@@ -56,13 +57,7 @@ export function ConsoleView({ mode, flowId, variantId, onFlowChange, onVariantCh
       seed = t.seedFor();
     } else if (flow?.kind === 'login') {
       t = simulatorTransport({ scenario: flow.scenario });
-      seed = {
-        client_id: '<client_id>',
-        connection: flow.scenario.connection,
-        audience: '<audience>',
-        scope: 'openid profile email',
-        capabilities: [...flow.scenario.caps],
-      };
+      seed = initiateSeed(flow.scenario);
     }
 
     transport.current = t;
@@ -174,6 +169,14 @@ export function ConsoleView({ mode, flowId, variantId, onFlowChange, onVariantCh
         />
       )}
 
+      {/* What this flow is meant to show, and the rule it turns on. Both were already written on
+          every scenario and neither reached the screen. */}
+      {mode !== 'live' && flow?.scenario?.summary && (
+        <p className="rounded-lg border-l-2 border-primary/50 bg-muted/40 px-4 py-3 text-sm leading-relaxed text-muted-foreground">
+          {flow.scenario.summary}
+        </p>
+      )}
+
       {needsTenant ? (
         <p className="rounded-lg border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
           Enter a tenant domain and client ID to start testing.
@@ -189,6 +192,9 @@ export function ConsoleView({ mode, flowId, variantId, onFlowChange, onVariantCh
                 edited={s.edited}
                 domain={tenant?.domain}
               />
+              {/* The browser leg sits between the call that handed back an href and the one that
+                  resumes — the only step in the transcript that is not a request. */}
+              <BrowserLeg handoff={s.result?.handoff} outcome={sent[i + 1]?.result?.legOutcome} />
               {i === sent.length - 1 && !showPending && !done && (
                 <NextBar
                   next={next}

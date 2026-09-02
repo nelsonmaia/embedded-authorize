@@ -1,5 +1,38 @@
 # Forms Integration in Embedded Authorization
 
+> **Amended 2026-09-02 to the settled contract.** This copy differs from the Confluence original
+> where the documents contradicted each other or [draft-ietf-oauth-first-party-apps-04](https://datatracker.ietf.org/doc/draft-ietf-oauth-first-party-apps/).
+> Each change is marked **AMENDED** inline with its reason. The machine-readable record is
+> `DECISIONS` in `src/data/spec.js`; the simulator is held to it by `tests/webflows.test.js`.
+>
+> | Changed | From | To |
+> | --- | --- | --- |
+> | Resume action | `action:interaction:form:verify:v1` — never offered in `next[]` | `action:interaction:form:v1`, the action that WAS offered |
+> | Native descriptor binding | `state` | `journey_id` (DX Flows still receives it as `state` server-side) |
+> | Descriptors | TTL held server-side only | `expires_in: 600` returned to the client |
+> | Error code, redirect path | `insufficient_authorization` | `redirect_to_web` + top-level `request_uri` |
+> | Error code, native path | `insufficient_authorization` | unchanged — nothing leaves the app |
+>
+> **Why the two paths now differ in error code.** `redirect_to_web` is the signal "you must leave
+> the app to continue". The hosted-form path does exactly that, so it carries it; the Native Form
+> SDK renders inline, so emitting it there would be a lie the client acts on. This is the one place
+> in the protocol where the same action id comes back under two different error codes, and the
+> render path is precisely what distinguishes them.
+>
+> **Why the resume action changed.** D2 decision #3 makes `next[]` the server-side allow-list that
+> the inbound action is validated against — it is what stops a client skipping a step. As written,
+> this document advertised `action:interaction:form:v1` and then resumed on
+> `action:interaction:form:verify:v1`, so a server enforcing its own allow-list would have had to
+> reject the client's own documented next call. Every other web leg — CAPTCHA, the Actions
+> redirect — is offered and resumed on one id. Forms now matches, and `:verify:` is retired.
+>
+> **Why the binding field changed.** [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749) already
+> defines `state` as the anti-CSRF parameter, and the sibling REDIR page argues at length against
+> reusing the word for the coordination reference — *"Calling this reference 'state' would conflate
+> two distinct things."* The same reasoning applies to the journey binding. `journey_id` names what
+> the value identifies; the `{ state: txn }` argument to `createJourney` is unchanged, because that
+> is DX Flows' own vocabulary and never reaches the client.
+
 > Working document — tied to the redirect-to-web and native SDK paths for post-login Actions forms.  
 > Cross-reference the PoC in PR [atko-cic/auth0-server#18339](https://github.com/atko-cic/auth0-server/pull/18339).  
 > Part of the [Redirect to Web Flows in Embedded Authorization](https://oktainc.atlassian.net/wiki/spaces/IAMEA/pages/1046249511/Redirect+to+Web+Flows+in+Embedded+Authorization) architecture.
@@ -9,7 +42,7 @@ Two integration paths exist for surfacing a post-login Actions form in an embedd
 |  | Redirect to Web | Native Form SDK |
 | --- | --- | --- |
 | Render location | Auth0 hosted form page (WebView) | In-app, using the Form SDK |
-| `next[]` response | `action:interaction:form:v1` + `href` | `action:interaction:form:v1` + form payload (no `href`) |
+| `next[]` response | `action:interaction:form:v1` + `href` + `expires_in` | `action:interaction:form:v1` + `form_id` + `journey_id` (no `href`) |
 | Client capability required | none (default) | `action:interaction:form:native:v1` |
 | SDK dependency | none | Native Form SDK |
 | Status | Available | **Beta only** |
@@ -39,7 +72,7 @@ await dxFlowsApi.createJourney(
 );
 ```
 
-`state` = `txn` (UUIDv4, server-generated). The Forms SDK and the DX Flows API use this value to look up and advance the journey. On resume, the server calls `dxFlowsApi.getJourney(tenantName, txn)` and checks `status === COMPLETED`.
+`state` = `txn` (UUIDv4, server-generated). This is the DX Flows argument name and stays as it is — only the WIRE field, on the native descriptor, is renamed to `journey_id`. The Forms SDK and the DX Flows API use this value to look up and advance the journey. On resume, the server calls `dxFlowsApi.getJourney(tenantName, txn)` and checks `status === COMPLETED`.
 
 #### `triggerContext` — no UL session in embedded flows
 
@@ -64,7 +97,7 @@ For the `/e/authorize` path, the equivalent inputs come from the `auth_session` 
 
 | Data | Where it lives |
 | --- | --- |
-| Journey binding key (`txn`) | In the journey itself (as `state`) AND in the Redis coordination reference |
+| Journey binding key (`txn`) | In the journey itself (as `state`) AND in the Redis coordination reference. Sent to the client as `journey_id` on the native path only. |
 | Form template id (`form_id`) | In the Redis coordination reference; passed to `createJourney` as `promptId` |
 | Auth context for resume | In `auth_session` — self-contained, carries its own context |
 | Journey completion status | DX Flows API — `dxFlowsApi.getJourney(tenantName, txn).status` |
@@ -141,7 +174,7 @@ The app never touches the Forms SDK. The WebView does all of this.
 | `form_token` | Required (SDK needs it to find the journey) | Not needed |
 | Iron-seal / `FORM_SECRET` | Required | Not needed |
 | SDK rendering | SDK embeds form in app UI | Hosted form page handles it |
-| Resume mechanism | New endpoint or grant type consuming `form_token` | `/e/authorize` with `action:interaction:form:verify:v1` |
+| Resume mechanism | New endpoint or grant type consuming `form_token` | `/e/authorize` with `action:interaction:form:v1` **(AMENDED)** |
 | Resume auth context | Carried in `form_token.ses` (iron-sealed) | Carried in `auth_session` (self-contained) |
 
 ### HTTP flow
@@ -155,11 +188,13 @@ POST /e/authorize
 }
 
 → 403 {
-    "error": "insufficient_authorization",
+    "error": "redirect_to_web",
+    "request_uri": "urn:ietf:params:oauth:request_uri:form_9tBrKx",
     "auth_session": "eyJ...(form-pending)",
     "next": [{
       "action": "action:interaction:form:v1",
-      "href": "https://{{tenant}}.auth0.com/form?request_uri=urn:ietf:params:oauth:request_uri:form_9tBrKx"
+      "href": "https://{{tenant}}.auth0.com/form?request_uri=urn:ietf:params:oauth:request_uri:form_9tBrKx",
+      "expires_in": 600
     }]
   }
 
@@ -171,7 +206,7 @@ POST /e/authorize
 POST /e/authorize
 {
   "auth_session": "eyJ...(form-pending)",
-  "action": "action:interaction:form:verify:v1"
+  "action": "action:interaction:form:v1"
 }
 
 → 200 { "authorization_code": "eyJ..." }
@@ -204,11 +239,12 @@ The client declares `action:interaction:form:native:v1` in its `capabilities`. T
 "next": [{
   "action": "action:interaction:form:v1",
   "form_id": "<form_id>",
-  "state": "<txn>"
+  "journey_id": "<txn>",
+  "expires_in": 600
 }]
 ```
 
-Journey creation, `auth_session` binding, and the Redis coordination reference are identical to the redirect-to-web path. The server just omits the `href` construction and includes `form_id` + `state` directly so the Native Form SDK can initialize.
+Journey creation, `auth_session` binding, and the Redis coordination reference are identical to the redirect-to-web path. The server just omits the `href` construction and includes `form_id` + `journey_id` directly so the Native Form SDK can initialize.
 
 ### HTTP flow
 
@@ -224,17 +260,20 @@ POST /e/authorize
   ]
 }
 
+// Rendered in-app: no browser opens, so this is an ordinary continuation rather than
+// redirect_to_web. The error code is the signal "you must leave the app".
 → 403 {
     "error": "insufficient_authorization",
     "auth_session": "eyJ...(form-pending)",
     "next": [{
       "action": "action:interaction:form:v1",
       "form_id": "<form_id>",
-      "state": "<txn>"
+      "journey_id": "<txn>",
+      "expires_in": 600
     }]
   }
 
-// App initializes the Native Form SDK with form_id and state.
+// App initializes the Native Form SDK with form_id and journey_id.
 // SDK renders form inline. User submits.
 // SDK POSTs submission to DX Flows API → journey transitions PENDING → COMPLETED.
 // App calls /e/authorize to resume.
@@ -242,7 +281,7 @@ POST /e/authorize
 POST /e/authorize
 {
   "auth_session": "eyJ...(form-pending)",
-  "action": "action:interaction:form:verify:v1"
+  "action": "action:interaction:form:v1"
 }
 
 → 200 { "authorization_code": "eyJ..." }
@@ -250,7 +289,7 @@ POST /e/authorize
 
 ### Open questions
 
-1. **Exact payload shape** — confirm the field names the Native Form SDK expects. `form_id` and `state` are the minimum; check whether the SDK also needs `tenant`, `client_id`, or a token.
+1. **Exact payload shape** — the wire contract is `form_id` + `journey_id` (**AMENDED** from `state`; see the header). Still open: whether the SDK also needs `tenant`, `client_id`, or a token. If the SDK reads a field literally named `state`, the adapter maps `journey_id` onto it — the rename is deliberate and does not follow the SDK's internal naming out onto the wire.
 2. **Capability negotiation** — `action:interaction:form:native:v1` is a proposal. Confirm naming with the SDK team and align with the broader capability registry.
 3. **SDK beta graduation criteria** — define what "GA" means for the Native Form SDK so this path has a clear promotion path out of beta.
 4. **Fallback behavior** — if the client declares `action:interaction:form:native:v1` but the tenant has a form the SDK version doesn't support, should the server fall back to `href` or return an error? Define the degradation contract.

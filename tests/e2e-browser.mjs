@@ -8,6 +8,7 @@
  * WebSocket, so there is no automation dependency to install.
  */
 import { spawn } from 'node:child_process';
+import { FLOW_FILTERS } from '../src/data/flows.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -240,6 +241,71 @@ try {
     JSON.stringify(picker.opts.slice(0, 6))
   );
 
+  /* ── the filter chips narrow the dropdown ──────────────────────────────── */
+
+  const chips = await cdp.eval(`
+    const out = [];
+    for (const chip of [...document.querySelectorAll('button[aria-pressed]')]) {
+      const label = chip.textContent.trim();
+      chip.click();
+      await __t.wait(250);
+      const combo = document.querySelectorAll('[role="combobox"]')[0];
+      combo.click();
+      await __t.wait(350);
+      const opts = [...document.querySelectorAll('[role="option"]')].map(o => o.textContent.trim());
+      const groups = [...document.querySelectorAll('[role="group"] > div:first-child')].map(g => g.textContent.trim());
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await __t.wait(200);
+      out.push({ label, groups, count: opts.length, selected: combo.textContent.trim(), opts });
+    }
+    // Leave the picker unfiltered for the checks that follow.
+    document.querySelectorAll('button[aria-pressed]')[0].click();
+    await __t.wait(250);
+    return out;
+  `);
+
+  const chipBy = (name) => chips.find((c) => c.label.startsWith(name));
+  check(
+    'there is a filter chip per category',
+    chips.length === FLOW_FILTERS.length,
+    `${chips.length} chips for ${FLOW_FILTERS.length} filters: ${chips.map((c) => c.label).join(', ')}`
+  );
+  check(
+    'each chip label carries its own count',
+    chips.every((c) => Number(c.label.match(/(\d+)$/)?.[1]) === c.count),
+    JSON.stringify(chips.map((c) => ({ l: c.label, n: c.count })))
+  );
+  check(
+    'filtering actually narrows the list',
+    chipBy('Redirect to Web').count < chipBy('All').count && chipBy('Redirect to Web').count > 0,
+    `redirect-to-web ${chipBy('Redirect to Web')?.count} of ${chipBy('All')?.count}`
+  );
+  check(
+    'Sign up hides the sign-in heading entirely',
+    chipBy('Sign up').groups.length === 1 && chipBy('Sign up').groups[0] === 'Sign up',
+    JSON.stringify(chipBy('Sign up')?.groups)
+  );
+  check(
+    'a filter moves the selection to a flow it still offers',
+    chipBy('Errors').opts.includes(chipBy('Errors').selected),
+    `selected "${chipBy('Errors')?.selected}" not among ${chipBy('Errors')?.count} options`
+  );
+  check(
+    'every journey accounts for every flow',
+    chipBy('Sign up').count + chipBy('Sign in').count === chipBy('All').count,
+    `${chipBy('Sign up')?.count} + ${chipBy('Sign in')?.count} != ${chipBy('All')?.count}`
+  );
+  check(
+    'no chip is a bookmark for a single flow',
+    chips.every((c) => c.count >= 2),
+    chips.filter((c) => c.count < 2).map((c) => c.label).join(', ')
+  );
+  check(
+    'the flow names carry no verified/spec marks',
+    chipBy('All').opts.every((o) => !/\b(verified|spec)\b/i.test(o)),
+    chipBy('All').opts.filter((o) => /\b(verified|spec)\b/i.test(o)).join(', ')
+  );
+
   /* ── no PRD / milestone / delivery language anywhere in the UI ─────────── */
 
   const language = await cdp.eval(`
@@ -338,19 +404,157 @@ try {
 
   /* ── contract view ────────────────────────────────────────────────────── */
 
+  // Radix tabs need a trusted click; a synthetic el.click() leaves them inactive.
+  await cdp.clickReal(
+    `[...document.querySelectorAll('[role="tab"]')].find(t => /API Spec/.test(t.textContent))`
+  );
   const contract = await cdp.eval(`
-    __t.btn('Full contract').click();
     await __t.wait(500);
     const t = document.body.innerText;
     const rows = document.querySelectorAll('tbody tr').length;
     const bad = ['PRD', 'Confluence', 'Milestone', 'Delivery order', 'Open questions', 'superseded'];
     return { rows, tables: document.querySelectorAll('table').length,
              leaks: bad.filter(w => t.includes(w)),
-             hasWorking: /working/.test(t), hasNotYet: /not yet/.test(t) };
+             isSpec: /POST\\s+\\/e\\/authorize/.test(t) && /Opening a session/.test(t) &&
+                     /Continuing a session/.test(t) && /Responses/.test(t),
+             hasErrorDescriptions: /error_description values/i.test(t) &&
+                                   /invalid_identifier_or_code/.test(t),
+             // Commentary belongs in the source documents, not the spec page.
+             hasCommentary: /Settled questions/i.test(t) ||
+                            /Where the tenant and the specification differ/i.test(t) ||
+                            /Where the two models disagree/i.test(t),
+             hasBuiltColumn: /\\bBuilt\\?/.test(t) || /not yet built/i.test(t) };
   `);
   check('contract view renders its tables', contract.tables >= 3 && contract.rows > 30, `${contract.tables} tables / ${contract.rows} rows`);
   check('contract view has no PRD or milestone language', contract.leaks.length === 0, contract.leaks.join(', '));
-  check('capabilities are marked working vs not yet built', contract.hasWorking && contract.hasNotYet);
+  check('it reads as an API spec: endpoint, requests, actions, responses', contract.isSpec, JSON.stringify(contract));
+  check('it carries the error vocabulary a client switches on', contract.hasErrorDescriptions);
+  check('no build-status column survives', !contract.hasBuiltColumn);
+  check('no commentary sections on the spec page', !contract.hasCommentary);
+
+  const navState = await cdp.eval(`
+    const tabs = [...document.querySelectorAll('[role="tab"]')];
+    return {
+      labels: tabs.map(t => t.textContent.trim()),
+      selected: tabs.filter(t => t.getAttribute('aria-selected') === 'true')
+                    .map(t => t.textContent.trim()),
+      // Radix tabs ARE <button> elements, so a plain button lookup finds the tab itself.
+      // The thing being asserted gone is a separate, non-tab toggle.
+      leftoverButton: [...document.querySelectorAll('button')].some(b =>
+        b.getAttribute('role') !== 'tab' &&
+        /^(API Spec|Full contract|Back to console)/.test(b.textContent.trim())),
+    };
+  `);
+  check(
+    'the three destinations are one control',
+    navState.labels.length === 3 && !navState.leftoverButton,
+    `${navState.labels.join(' | ')}${navState.leftoverButton ? ' + a stray button' : ''}`
+  );
+  check(
+    'exactly one destination is highlighted, and it is the contract',
+    navState.selected.length === 1 && /API Spec/.test(navState.selected[0]),
+    `selected: ${navState.selected.join(', ') || 'none'}`
+  );
+
+  /* ── the browser leg is drawn between the calls ────────────────────────── */
+
+  await cdp.clickReal(
+    `[...document.querySelectorAll('[role="tab"]')].find(t => /End state/.test(t.textContent))`
+  );
+  await cdp.clickReal(
+    `[...document.querySelectorAll('button[aria-pressed]')].find(b => /Redirect to Web/.test(b.textContent))`
+  );
+  const leg = await cdp.eval(`
+    await __t.wait(250);
+    const combo = document.querySelectorAll('[role="combobox"]')[0];
+    combo.click();
+    await __t.wait(350);
+    const opt = [...document.querySelectorAll('[role="option"]')]
+      .find(o => /Home Realm Discovery/.test(o.textContent));
+    if (!opt) return { why: 'federation flow not in the Redirect to Web list' };
+    opt.click();
+    await __t.wait(400);
+
+    __t.btn('Send').click();
+    await __t.wait(450);
+
+    const t = document.body.innerText;
+    return {
+      shown: /the browser leg/i.test(t),
+      namesTheCallback: /myapp:\\/\\//.test(t),
+      saysNoToken: /no token and no code/i.test(t),
+      // The hook must not have leaked into the request pane.
+      leaksSimulate: [...document.querySelectorAll('pre, textarea')]
+        .some(e => /"simulate"/.test(e.value ?? e.textContent)),
+    };
+  `);
+  check('a browser leg is drawn between the calls', leg.shown, leg.why || JSON.stringify(leg));
+  check('it names the deep link and what it carries', leg.namesTheCallback && leg.saysNoToken, JSON.stringify(leg));
+  check('no simulate hook leaks into the request', !leg.leaksSimulate);
+
+  /* ── theme, and the .md export ─────────────────────────────────────────── */
+
+  const theme = await cdp.eval(`
+    const btn = (label) => [...document.querySelectorAll('[role="radio"]')]
+      .find(b => b.getAttribute('aria-label') === label);
+    const isDark = () => document.documentElement.classList.contains('dark');
+    const out = { hasToggle: !!btn('Light') && !!btn('Dark') && !!btn('System') };
+
+    btn('Light').click(); await __t.wait(120);
+    out.lightRemovesClass = !isDark();
+    out.lightChecked = btn('Light').getAttribute('aria-checked') === 'true';
+    // The page must be readable, not merely un-classed: a light body over dark tokens would pass
+    // a class check and be unusable.
+    out.lightBg = getComputedStyle(document.body).backgroundColor;
+
+    btn('Dark').click(); await __t.wait(120);
+    out.darkAddsClass = isDark();
+    out.darkBg = getComputedStyle(document.body).backgroundColor;
+
+    btn('System').click(); await __t.wait(120);
+    out.systemFollowsOs = isDark() === matchMedia('(prefers-color-scheme: dark)').matches;
+    out.onlyOneChecked =
+      [...document.querySelectorAll('[role="radio"]')]
+        .filter(b => b.getAttribute('aria-checked') === 'true').length === 1;
+    return out;
+  `);
+  check('there is a light / dark / system control', theme.hasToggle);
+  check('light and dark actually change the page', theme.lightRemovesClass && theme.darkAddsClass && theme.lightBg !== theme.darkBg, `${theme.lightBg} vs ${theme.darkBg}`);
+  check('system follows the OS setting', theme.systemFollowsOs);
+  check('exactly one theme is selected', theme.onlyOneChecked);
+
+  // The export button lives on the API Spec page.
+  await cdp.clickReal(
+    `[...document.querySelectorAll('[role="tab"]')].find(t => /API Spec/.test(t.textContent))`
+  );
+  const md = await cdp.eval(`
+    await __t.wait(300);
+    // Capture what the download would contain rather than letting headless Chrome swallow it.
+    let captured = null;
+    const realCreate = URL.createObjectURL;
+    URL.createObjectURL = (blob) => { captured = blob; return 'blob:stub'; };
+    const realClick = HTMLAnchorElement.prototype.click;
+    let filename = null;
+    HTMLAnchorElement.prototype.click = function () { filename = this.download; };
+
+    __t.btn('Export').click();
+    await __t.wait(200);
+
+    URL.createObjectURL = realCreate;
+    HTMLAnchorElement.prototype.click = realClick;
+    const text = captured ? await captured.text() : '';
+    return {
+      filename,
+      type: captured?.type ?? null,
+      bytes: text.length,
+      isSpec: /^# POST \\/e\\/authorize/.test(text),
+      hasTables: (text.match(/^\\| --- \\|/gm) || []).length,
+      hasActions: /action:identify:email/.test(text) || /identify:email/.test(text),
+    };
+  `);
+  check('the spec exports as markdown', md.isSpec && md.bytes > 4000, JSON.stringify(md));
+  check('it downloads with a sensible filename and type', /\.md$/.test(md.filename || '') && /markdown/.test(md.type || ''), `${md.filename} · ${md.type}`);
+  check('the export carries the tables and the action vocabulary', md.hasTables >= 4 && md.hasActions, JSON.stringify(md));
 
   const realErrors = cdp.consoleErrors.filter((e) => !/favicon|React DevTools/i.test(e));
   check('no console errors', realErrors.length === 0, realErrors.join('\n    '));
