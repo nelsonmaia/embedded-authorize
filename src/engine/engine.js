@@ -634,9 +634,39 @@ function hasUsableAuthMethod(state) {
 export function initiate(state, payload = {}) {
   if (!state.connection) return badRequest("data must have required property 'connection'");
 
-  // PKCE is what makes a request_uri legal to return later — the draft forbids issuing one to a
-  // client that never sent a code_challenge. Captured here, at the only call that can carry it.
-  if (payload.code_challenge) state.codeChallenge = String(payload.code_challenge);
+  // PKCE is a precondition, not an option. This endpoint serves public clients and issues an
+  // authorization code; without a challenge that code is redeemable by anyone who intercepts it.
+  // Refusing here also means the draft's "no request_uri without a code_challenge" rule can never
+  // be reached — there is no such request.
+  if (!payload.code_challenge) {
+    return {
+      status: 400,
+      body: {
+        error: 'invalid_request',
+        error_description: 'Missing "code_challenge". PKCE is required.',
+      },
+      note:
+        'PKCE is mandatory on initiate. The clients this endpoint serves are public — they hold no ' +
+        'secret — so the authorization code at the end of the flow is the only thing standing ' +
+        'between an interceptor and a token. A code issued without a challenge is redeemable by ' +
+        'whoever gets hold of it, which on a native app means any other app registered for the ' +
+        'same redirect scheme.\n\n' +
+        'The live tenant accepts this request today; that divergence is recorded as a known gap.',
+    };
+  }
+  if (payload.code_challenge_method && payload.code_challenge_method !== 'S256') {
+    return {
+      status: 400,
+      body: {
+        error: 'invalid_request',
+        error_description: `Unsupported "code_challenge_method": ${payload.code_challenge_method}. Use S256.`,
+      },
+      note:
+        '`plain` sends the verifier itself as the challenge, so anyone who can read the initiate ' +
+        'request can redeem the code. It protects nothing this endpoint needs protecting from.',
+    };
+  }
+  state.codeChallenge = String(payload.code_challenge);
 
   const { offered, withheld } = negotiate(state);
 

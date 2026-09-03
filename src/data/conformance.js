@@ -52,138 +52,218 @@ const TOP_LEVEL = new Set([
   'authorization_code',
 ]);
 
+const j = (v) => JSON.stringify(v);
+
 /**
  * @param {{
  *   request?: { body?: object },
  *   status: number,
  *   body?: object,
- *   context?: { sessionAlreadyUsed?: boolean },
+ *   context?: { sessionAlreadyUsed?: boolean, declared?: string[] },
  * }} exchange
- * @returns {{ severity: string, title: string, detail: string, gap?: string }[]}
+ * @returns {{
+ *   severity: string, title: string, expected?: string, actual?: string, why: string, gap?: string
+ * }[]}
+ *
+ * A finding says what was expected, what came back, and what it costs — three separate fields,
+ * because prose describing a difference is harder to act on than the two values side by side.
+ * `title` names what is wrong in one line; `why` is the consequence, never a restatement of it.
  */
 export function checkResponse({ request, status, body, context } = {}) {
   const found = [];
-  const add = (severity, title, detail, gap) => found.push({ severity, title, detail, gap });
+  const add = (f) => found.push(f);
 
   if (!body || typeof body !== 'object') return found;
 
   const sent = request?.body ?? {};
   const { error, error_description: desc, next, auth_session: session } = body;
+  const actions = (Array.isArray(next) ? next : []).map((n) => n?.action).filter(Boolean);
 
   /* ── the error code and its status ─────────────────────────────────────── */
 
   if (error) {
     const known = ERRORS[error];
     if (!known) {
-      add(
-        'undocumented',
-        `error: ${error} is not in the registry`,
-        'The contract documents ' +
-          Object.keys(ERRORS).join(', ') +
-          '. Either the tenant returns something undocumented, or spec.js is behind.'
-      );
+      add({
+        severity: 'undocumented',
+        title: `Unknown error code: ${error}`,
+        expected: `one of ${Object.keys(ERRORS).join(', ')}`,
+        actual: error,
+        why: 'Either the tenant returns something the contract does not describe, or the registry is behind it.',
+      });
     } else if (known.http !== status) {
-      add(
-        'violation',
-        `${error} returned ${status}, not ${known.http}`,
-        error === 'insufficient_authorization'
-          ? 'The draft is normative here: "The authorization server MUST respond with the HTTP 403 ' +
-            '(Forbidden) status code."'
-          : `The contract pairs ${error} with ${known.http}.`
-      );
+      add({
+        severity: 'violation',
+        title: `Wrong status for ${error}`,
+        expected: `${known.http}`,
+        actual: `${status}`,
+        why:
+          error === 'insufficient_authorization'
+            ? 'The draft is normative: "The authorization server MUST respond with the HTTP 403 ' +
+              '(Forbidden) status code." A client keying on the status will not recognise this as a ' +
+              'continuation.'
+            : `The contract pairs ${error} with ${known.http}.`,
+      });
     }
   }
 
-  // 501 not_implemented is its own condition, handled below — a negotiated action with nothing
-  // behind it, not the allow-list refusing an out-of-order call.
+  // 501 not_implemented is its own condition, handled below.
   if (status >= 500 && error !== 'not_implemented') {
-    add(
-      'gap',
-      `${status} from the endpoint`,
-      'Nothing in the contract answers with a 5xx. An action outside the previous next[] used to ' +
+    add({
+      severity: 'gap',
+      title: `The endpoint answered ${status}`,
+      expected: 'a 4xx naming what was wrong with the request',
+      actual: `${status}${error ? ` ${error}` : ''}`,
+      why:
+        'Nothing in the contract answers with a 5xx. An action outside the previous next[] used to ' +
         'land here; that was fixed and now returns 400 invalid_request, so a 5xx today is either a ' +
         'genuine fault or a regression of that fix.',
-      gapTitled('Out-of-order action')
-    );
+      gap: gapTitled('Out-of-order action'),
+    });
   }
 
   if (error === 'invalid_grant' && sent.auth_session) {
-    add(
-      'gap',
-      'invalid_grant used for a bad auth_session',
-      'The draft defines invalid_session for exactly this: "The provided auth_session is invalid, ' +
-        'expired, revoked, or otherwise not acceptable." invalid_grant is RFC 6749\'s code for a ' +
-        'bad authorization grant, which an auth_session is not.'
-    );
+    add({
+      severity: 'gap',
+      title: 'A bad auth_session reported as invalid_grant',
+      expected: 'invalid_session',
+      actual: 'invalid_grant',
+      why:
+        'The draft defines invalid_session for exactly this: "The provided auth_session is invalid, ' +
+        'expired, revoked, or otherwise not acceptable." invalid_grant is RFC 6749\'s code for a bad ' +
+        'authorization grant, which an auth_session is not — so a client cannot tell a dead session ' +
+        'from a rejected grant.',
+    });
   }
 
   if (error === 'not_implemented') {
-    add(
-      'gap',
-      `${sent.action ?? 'The action'} negotiates but has no handler`,
-      'It was advertised in next[] and accepted into the allow-list, then resolved to 501. A ' +
-        'client that trusts next[] cannot avoid this.',
-      gapTitled('identify:phone')
-    );
+    add({
+      severity: 'gap',
+      title: `${sent.action ?? 'The action'} has no handler behind it`,
+      expected: 'the action to run, having been offered in next[]',
+      actual: '501 not_implemented',
+      why:
+        'It was advertised in next[] and accepted into the allow-list, then refused. A client that ' +
+        'trusts next[] — which is the contract — cannot avoid this.',
+      gap: gapTitled('identify:phone'),
+    });
   }
 
   /* ── error_description vocabulary ──────────────────────────────────────── */
 
   if (desc && status === 403 && !DESCRIPTION_CODES.has(desc)) {
-    add(
-      'undocumented',
-      `error_description: ${desc} is not in the vocabulary`,
-      'On a 403 this is a coded value a client switches on, and the documented set is ' +
-        [...DESCRIPTION_CODES].join(', ') + '.'
-    );
+    add({
+      severity: 'undocumented',
+      title: `Unknown error_description: ${desc}`,
+      expected: `one of ${[...DESCRIPTION_CODES].join(', ')}`,
+      actual: desc,
+      why: 'On a 403 this is a coded value a client switches on, so an unlisted one has no defined meaning.',
+    });
   }
 
   /* ── continuation shape ────────────────────────────────────────────────── */
 
   if (error === 'insufficient_authorization') {
     if (!session) {
-      add(
-        'violation',
-        'A continuation with no auth_session',
-        'Every non-final response carries a rotated session; without one the flow cannot continue ' +
-          'and the client has to restart.'
-      );
+      add({
+        severity: 'violation',
+        title: 'The continuation carries no auth_session',
+        expected: 'a rotated auth_session',
+        actual: 'absent',
+        why: 'Without one the flow cannot continue and the client has to restart from the beginning.',
+      });
     }
     if (!Array.isArray(next) || next.length === 0) {
-      add(
-        'violation',
-        'A continuation with no next[]',
-        'next[] is both the response and the server-side allow-list. An empty one leaves the ' +
-          'client with nothing it is permitted to send.'
-      );
+      add({
+        severity: 'violation',
+        title: 'The continuation carries no next[]',
+        expected: 'at least one action',
+        actual: Array.isArray(next) ? '[]' : 'absent',
+        why:
+          'next[] is both the response and the server-side allow-list, so an empty one leaves the ' +
+          'client with nothing it is permitted to send.',
+      });
     }
   }
 
-  // Only the caller knows whether this session had already been spent — a single response cannot
-  // show it. D2 decision #4 says an accepted request consumes its session; if a consumed one still
-  // works, every step of the flow is replayable, and challenge:email becomes an unrate-limited
-  // resend. This is the most consequential thing live mode can demonstrate.
   if (context?.sessionAlreadyUsed && wasAccepted(status, body)) {
-    add(
-      'gap',
-      'A consumed auth_session was accepted',
-      'This exact session had already been used on an earlier successful call. It should have been ' +
-        'burned by that call and rejected here. Because it was not, any step can be replayed — ' +
-        'which is what turns challenge:email into an OTP-bombing vector with none of the ' +
-        'protections a real resend would carry.',
-      gapTitled('auth_session replay')
-    );
+    add({
+      severity: 'gap',
+      title: 'A spent auth_session was accepted',
+      expected: '400 invalid_session',
+      actual: `${status} ${error ?? 'accepted'}`,
+      why:
+        'This exact session had already been used on an earlier successful call and should have been ' +
+        'burned by it. Because it still works, any step can be replayed — which is what turns ' +
+        'challenge:email into an OTP-bombing vector with none of the protections a real resend ' +
+        'would carry.',
+      gap: gapTitled('auth_session replay'),
+    });
   }
 
   if (session && sent.auth_session && session === sent.auth_session) {
-    add(
-      'gap',
-      'auth_session did not rotate',
-      'Each accepted request should consume the session it was presented with and answer with a ' +
-        'fresh one. The same value coming back means a consumed session stays valid, which is what ' +
-        'makes challenge:email replayable as an unrate-limited resend.',
-      gapTitled('auth_session replay')
-    );
+    add({
+      severity: 'gap',
+      title: 'auth_session did not rotate',
+      expected: 'a value different from the one sent',
+      actual: 'the same value came back',
+      why:
+        'Each accepted request should consume the session it was presented with. The same value ' +
+        'returning means a consumed session stays valid.',
+      gap: gapTitled('auth_session replay'),
+    });
+  }
+
+  /* ── PKCE ──────────────────────────────────────────────────────────────── */
+
+  // An initiate is the call with no auth_session: it is what creates one.
+  const isInitiate = !sent.auth_session && !sent.action;
+  if (isInitiate && !sent.code_challenge && wasAccepted(status, body)) {
+    add({
+      severity: 'gap',
+      title: 'A flow started with no PKCE challenge',
+      expected: '400 invalid_request — code_challenge is required',
+      actual: `${status} ${error ?? 'accepted'}`,
+      why:
+        'This endpoint serves public clients, which hold no secret, and this flow will end in an ' +
+        'authorization code. Issued without a challenge, that code is redeemable by whoever ' +
+        'intercepts it — on a native app, any other app registered for the same redirect scheme.',
+      gap: gapTitled('PKCE is not enforced'),
+    });
+  }
+  // The stronger case: the client tried and was refused. Worth separating, because "you did not
+  // send PKCE" and "you cannot send PKCE" call for completely different work.
+  if (
+    sent.code_challenge &&
+    status === 400 &&
+    /additional propert/i.test(desc ?? '')
+  ) {
+    add({
+      severity: 'gap',
+      title: 'The endpoint rejects code_challenge',
+      expected: 'the challenge to be accepted and sealed into the session',
+      actual: `400 ${desc}`,
+      why:
+        'The request schema is additionalProperties: false and defines no PKCE parameters, so a ' +
+        'client cannot opt into protecting its own authorization code. It also makes a draft rule ' +
+        'unreachable: a request_uri MUST NOT be returned to a client that sent no code_challenge, ' +
+        'and no client can send one — so no redirect_to_web response may legally carry the ' +
+        'reference the federation design is built on.',
+      gap: gapTitled('PKCE cannot be sent'),
+    });
+  }
+
+  if (isInitiate && sent.code_challenge_method && sent.code_challenge_method !== 'S256') {
+    add({
+      severity: 'gap',
+      title: `code_challenge_method ${sent.code_challenge_method} was accepted`,
+      expected: 'S256',
+      actual: sent.code_challenge_method,
+      why:
+        '`plain` sends the verifier itself as the challenge, so anyone who can read the initiate ' +
+        'request can redeem the code. It protects nothing here.',
+      gap: gapTitled('PKCE cannot be sent'),
+    });
   }
 
   /* ── redirect_to_web and PKCE ──────────────────────────────────────────── */
@@ -191,21 +271,28 @@ export function checkResponse({ request, status, body, context } = {}) {
   if (error === 'redirect_to_web') {
     const pkce = !!sent.code_challenge;
     if (body.request_uri && !pkce) {
-      add(
-        'violation',
-        'request_uri returned without PKCE',
-        'The draft: "If the client does not include a PKCE code_challenge in the initial ' +
+      add({
+        severity: 'violation',
+        title: 'request_uri issued without PKCE',
+        expected: 'no request_uri, because the request carried no code_challenge',
+        actual: body.request_uri,
+        why:
+          'The draft: "If the client does not include a PKCE code_challenge in the initial ' +
           'authorization challenge request, the authorization server MUST NOT return a request_uri ' +
-          'in the redirect_to_web error response."'
-      );
+          'in the redirect_to_web error response, as that would effectively be the same as a PAR ' +
+          'request without PKCE."',
+      });
     }
     if (!body.request_uri && pkce) {
-      add(
-        'undocumented',
-        'redirect_to_web without a request_uri',
-        'Permitted — the draft has the client start its own authorization code flow instead — but ' +
-          'a code_challenge was sent, so a reference could legally have been issued.'
-      );
+      add({
+        severity: 'undocumented',
+        title: 'No request_uri, though PKCE was sent',
+        expected: 'a request_uri, which the code_challenge made legal to issue',
+        actual: 'absent',
+        why:
+          'Permitted — the draft has the client start its own authorization code flow instead — but ' +
+          'the reference could have been issued here.',
+      });
     }
   }
 
@@ -214,40 +301,79 @@ export function checkResponse({ request, status, body, context } = {}) {
   for (const entry of Array.isArray(next) ? next : []) {
     const action = entry?.action;
     if (!action) {
-      add('violation', 'A next[] entry with no action', `Entry: ${JSON.stringify(entry)}`);
+      add({
+        severity: 'violation',
+        title: 'A next[] entry with no action',
+        expected: 'every entry to name an action',
+        actual: j(entry),
+        why: 'The client has nothing to send for this option.',
+      });
       continue;
     }
 
     const cap = byId(action);
     if (!cap && !KNOWN_ACTIONS.has(action)) {
-      add(
-        'undocumented',
-        `next[] offers ${action}`,
-        isFederatedAction(action)
+      add({
+        severity: 'undocumented',
+        title: `Unknown action offered: ${action}`,
+        expected: 'an action in the capability registry',
+        actual: action,
+        why: isFederatedAction(action)
           ? 'A connection-specialised federation action the registry cannot resolve.'
-          : 'The registry has no capability with this id.'
-      );
+          : 'The registry has no capability with this id, so nothing describes what to send.',
+      });
       continue;
     }
 
-    const declared = new Set((cap?.emits ?? []).map((e) => e.name));
-    for (const field of Object.keys(entry)) {
-      if (field === 'action' || declared.has(field)) continue;
-      add(
-        'undocumented',
-        `${action} carries ${field}`,
-        `The registry does not list ${field} among the fields this action emits on its descriptor.`
-      );
+    const declaredFields = new Set((cap?.emits ?? []).map((e) => e.name));
+    const extra = Object.keys(entry).filter((f) => f !== 'action' && !declaredFields.has(f));
+    if (extra.length) {
+      add({
+        severity: 'undocumented',
+        title: `${action} carries ${extra.join(', ')}`,
+        expected: declaredFields.size ? `action, ${[...declaredFields].join(', ')}` : 'action only',
+        actual: Object.keys(entry).join(', '),
+        why: 'The registry does not list these among the fields this action emits on its descriptor.',
+      });
     }
 
     if (entry.href && entry.expires_in === undefined) {
-      add(
-        'gap',
-        `${action} hands back an href with no expires_in`,
-        'The reference behind it has a TTL. Without it a client cannot tell an expired href from a ' +
-          'broken one, or refresh before the user meets a dead page.',
-        gapTitled('Web-leg lifetimes')
-      );
+      add({
+        severity: 'gap',
+        title: `${action} hands back an href with no expires_in`,
+        expected: 'href, expires_in',
+        actual: 'href',
+        why:
+          'The reference behind the href has a TTL. Without it a client cannot tell an expired href ' +
+          'from a broken one, or refresh before the user meets a dead page.',
+        gap: gapTitled('Web-leg lifetimes'),
+      });
+    }
+  }
+
+  /* ── the challenge should survive its own code ─────────────────────────── */
+
+  const verify = (Array.isArray(next) ? next : []).find((n) => n?.action === 'action:verify:otp:v1');
+  if (verify) {
+    const challenge = ['phone', 'text', 'voice'].includes(verify.channel)
+      ? 'action:challenge:phone:v1'
+      : 'action:challenge:email:v1';
+
+    // Only meaningful if the client asked for it — negotiation is an intersection, so an
+    // undeclared capability is correctly absent and flagging it would be noise.
+    const declared = new Set(context?.declared ?? []);
+    if (declared.has(challenge) && !actions.includes(challenge)) {
+      add({
+        severity: 'gap',
+        title: `next[] is missing ${challenge}`,
+        expected: j([...actions, challenge]),
+        actual: j(actions),
+        why:
+          'A code is outstanding, so the challenge stays on offer for a resend. With it withdrawn, ' +
+          'the only action that could send another code is not in the allow-list — a user whose ' +
+          'code never arrived has to restart the whole flow.',
+        gap: gapTitled('challenge is withdrawn'),
+      });
     }
   }
 
@@ -255,15 +381,23 @@ export function checkResponse({ request, status, body, context } = {}) {
 
   if (status === 200) {
     if (!body.authorization_code) {
-      add('violation', 'A 200 with no authorization_code', 'The final response carries the code and nothing else.');
+      add({
+        severity: 'violation',
+        title: 'A 200 with no authorization_code',
+        expected: 'authorization_code',
+        actual: Object.keys(body).join(', ') || 'an empty body',
+        why: 'The final response carries the code; there is nothing else for the client to exchange.',
+      });
     }
     const extra = Object.keys(body).filter((k) => k !== 'authorization_code');
     if (extra.length) {
-      add(
-        'undocumented',
-        `The final response carries ${extra.join(', ')}`,
-        'The contract has it carry authorization_code alone.'
-      );
+      add({
+        severity: 'undocumented',
+        title: `The final response also carries ${extra.join(', ')}`,
+        expected: 'authorization_code alone',
+        actual: Object.keys(body).join(', '),
+        why: 'The contract has the final response carry the code and nothing else.',
+      });
     }
   }
 
@@ -271,7 +405,13 @@ export function checkResponse({ request, status, body, context } = {}) {
 
   for (const key of Object.keys(body)) {
     if (TOP_LEVEL.has(key)) continue;
-    add('undocumented', `Top-level ${key}`, `The contract does not define ${key} on a response.`);
+    add({
+      severity: 'undocumented',
+      title: `Undefined top-level field: ${key}`,
+      expected: [...TOP_LEVEL].join(', '),
+      actual: key,
+      why: 'The contract does not define this on a response, so no client will be reading it.',
+    });
   }
 
   return found;

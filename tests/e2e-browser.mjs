@@ -574,14 +574,32 @@ try {
     const pres = [...document.querySelectorAll('pre')].map(p => p.textContent).join('\\n');
     return {
       reachedTenant: /insufficient_authorization|invalid_request|auth_session/.test(pres),
-      hasVerdict: /Matches the contract|differences? from the spec/.test(t),
-      // A clean first call must not be dressed up as a problem.
-      cleanCallIsClean: /Matches the contract/.test(t) || /known gap/i.test(t),
+      // The verdict is a badge on the exchange it judges, not a summary elsewhere on the page.
+      hasVerdict: /matches the spec|off spec|known gaps?|differences?/i.test(t),
+      noSummaryBox: !/Matches the contract/.test(t) && !/differences from the spec/.test(t),
+      // A recorded deviation must read as a known gap, not as a contract violation — the whole
+      // point of the severity split. The tenant cannot accept PKCE, so the first call always has
+      // one; if it ever reports "off spec" instead, the severities have collapsed.
+      knownGapNotViolation: /known gaps?/i.test(t) && !/off spec/i.test(t),
+      // And the finding shows the difference rather than describing it.
+      showsTheDifference: /Expected/i.test(t) && /Got/i.test(t),
+      // Every finding can be filed. With nothing configured it falls back to the clipboard, which
+      // is the label to expect from a bare checkout.
+      raiseButtons: [...document.querySelectorAll('button')]
+        .filter(b => /Raise in Jira|Copy as ticket/.test(b.textContent)).length,
+      findingRows: document.querySelectorAll('[data-finding]').length,
     };
   `);
   check('live mode reaches the tenant', conformance.reachedTenant, conformance.why || JSON.stringify(conformance));
   check('it states whether the response matches the spec', conformance.hasVerdict, JSON.stringify(conformance));
-  check('a conformant response is not flagged as a problem', conformance.cleanCallIsClean, JSON.stringify(conformance));
+  check('a recorded deviation reads as a known gap, not a violation', conformance.knownGapNotViolation, JSON.stringify(conformance));
+  check('a finding shows expected vs got, not just prose', conformance.showsTheDifference, JSON.stringify(conformance));
+  check(
+    'every finding can be raised as a ticket',
+    conformance.raiseButtons > 0 && conformance.raiseButtons === conformance.findingRows,
+    `${conformance.raiseButtons} buttons for ${conformance.findingRows} findings`
+  );
+  check('the verdict is on the exchange, not in a summary box', conformance.noSummaryBox, JSON.stringify(conformance));
 
   const realErrors = cdp.consoleErrors.filter((e) => !/favicon|React DevTools/i.test(e));
   check('no console errors', realErrors.length === 0, realErrors.join('\n    '));

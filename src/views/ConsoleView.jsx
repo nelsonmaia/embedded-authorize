@@ -16,7 +16,6 @@ import { cannedTransport } from '@/transports/cannedTransport.js';
 import { simulatorTransport, initiateSeed } from '@/transports/simulatorTransport.js';
 import { liveTransport } from '@/transports/liveTransport.js';
 import { flowById } from '@/data/flows.js';
-import { summarise } from '@/data/conformance.js';
 import { LIVE_CAPABILITIES } from '@/data/spec.js';
 
 const pretty = (o) => JSON.stringify(o, null, 2);
@@ -35,6 +34,9 @@ export function ConsoleView({ mode, flowId, variantId, onFlowChange, onVariantCh
   const [busy, setBusy] = useState(false);
   const [outOfOrder, setOutOfOrder] = useState(false);
   const [nonce, setNonce] = useState(0);
+  /* What the dev server can do about Jira. Probed once; null until it answers, which is why the
+     button renders its clipboard label rather than flickering between modes. */
+  const [jira, setJira] = useState(null);
 
   const transport = useRef(null);
   const seedRef = useRef(''); // the untouched suggestion, for "Reset payload"
@@ -50,7 +52,11 @@ export function ConsoleView({ mode, flowId, variantId, onFlowChange, onVariantCh
 
     if (mode === 'live') {
       t = liveTransport({ tenant, capabilities: LIVE_CAPABILITIES });
-      seed = { client_id: tenant.clientId || '', connection: tenant.connection || '', capabilities: [...LIVE_CAPABILITIES] };
+      seed = {
+        client_id: tenant.clientId || '',
+        connection: tenant.connection || '',
+        capabilities: [...LIVE_CAPABILITIES],
+      };
       if (tenant.audience) seed.audience = tenant.audience;
       if (tenant.scope) seed.scope = tenant.scope;
     } else if (flow?.kind === 'signup' && variant) {
@@ -70,6 +76,18 @@ export function ConsoleView({ mode, flowId, variantId, onFlowChange, onVariantCh
     setOutOfOrder(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
+
+  useEffect(() => {
+    if (mode !== 'live') return;
+    let alive = true;
+    fetch('/__jira')
+      .then((r) => r.json())
+      .then((cfg) => alive && setJira(cfg))
+      .catch(() => alive && setJira({ canCreate: false })); // no dev server, or no plugin
+    return () => {
+      alive = false;
+    };
+  }, [mode]);
 
   const parseError = useMemo(() => {
     if (!draft.trim()) return 'Request body is empty.';
@@ -170,37 +188,6 @@ export function ConsoleView({ mode, flowId, variantId, onFlowChange, onVariantCh
         />
       )}
 
-      {/* Live only: a running count, so a deviation twelve calls back is still visible. Spec mode
-          never has any — it IS the contract, so a checker over it would only ever agree. */}
-      {mode === 'live' && sent.length > 0 && (() => {
-        const all = sent.flatMap((s) => s.result?.findings ?? []);
-        const n = summarise(all);
-        if (!all.length) {
-          return (
-            <p className="rounded-lg border border-[hsl(var(--ok))]/30 bg-[hsl(var(--ok))]/5 px-4 py-2.5 text-sm text-muted-foreground">
-              <span className="font-medium text-[hsl(var(--ok))]">Matches the contract</span> — nothing
-              in {sent.length} {sent.length === 1 ? 'response' : 'responses'} differs from the spec.
-            </p>
-          );
-        }
-        return (
-          <p className="rounded-lg border border-[hsl(var(--warn))]/30 bg-[hsl(var(--warn))]/5 px-4 py-2.5 text-sm text-muted-foreground">
-            <span className="font-medium text-foreground">
-              {all.length} {all.length === 1 ? 'difference' : 'differences'} from the spec
-            </span>{' '}
-            across {sent.length} {sent.length === 1 ? 'response' : 'responses'} —{' '}
-            {[
-              n.violation && `${n.violation} off spec`,
-              n.gap && `${n.gap} known ${n.gap === 1 ? 'gap' : 'gaps'}`,
-              n.undocumented && `${n.undocumented} undocumented`,
-            ]
-              .filter(Boolean)
-              .join(', ')}
-            . Each is annotated on the response it came from.
-          </p>
-        );
-      })()}
-
       {/* What this flow is meant to show, and the rule it turns on. Both were already written on
           every scenario and neither reached the screen. */}
       {mode !== 'live' && flow?.scenario?.summary && (
@@ -223,6 +210,7 @@ export function ConsoleView({ mode, flowId, variantId, onFlowChange, onVariantCh
                 result={s.result}
                 edited={s.edited}
                 domain={tenant?.domain}
+                jira={jira}
               />
               {/* The browser leg sits between the call that handed back an href and the one that
                   resumes — the only step in the transcript that is not a request. */}

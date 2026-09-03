@@ -27,9 +27,12 @@ import { simulatorTransport } from '../src/transports/simulatorTransport.js';
 
 const preset = (id) => CONNECTION_PRESETS.find((c) => c.id === id);
 
+/** PKCE is mandatory, so every helper sends it — as any real client would. */
+const PKCE = { code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM', code_challenge_method: 'S256' };
+
 const start = (connectionId, caps, opts = {}) => {
   const state = freshState({ connection: preset(connectionId), declaredCaps: caps, ...opts });
-  const first = initiate(state);
+  const first = initiate(state, { ...PKCE });
   return { state, first };
 };
 
@@ -89,13 +92,6 @@ test('Path B — ambiguous choice returns no href until the client picks', () =>
   assert.equal(done.status, 200);
 });
 
-/** Initiate with PKCE, which is what makes a request_uri legal to return. */
-const startWithPkce = (connectionId, caps, opts = {}) => {
-  const state = freshState({ connection: preset(connectionId), declaredCaps: caps, ...opts });
-  const first = initiate(state, { code_challenge: 'E9Melhoa2Ow', code_challenge_method: 'S256' });
-  return { state, first };
-};
-
 test('a pause that opens a browser is redirect_to_web with a request_uri', () => {
   // The draft's usage text names these cases directly: "The authorization server may choose to
   // interact directly with the user based on a risk assessment, the introduction of a new
@@ -103,24 +99,24 @@ test('a pause that opens a browser is redirect_to_web with a request_uri', () =>
   // as account recovery."
   const pauses = [
     (() => {
-      const { state } = startWithPkce('social-multi', ['authn:federated:v1']);
+      const { state } = start('social-multi', ['authn:federated:v1']);
       return submit(state, 'authn:federated:github:v1', {});
     })(),
     (() => {
-      const { state } = startWithPkce('db-both', PWD_CAPS, { botDetection: 'adaptive' });
+      const { state } = start('db-both', PWD_CAPS, { botDetection: 'adaptive' });
       return submit(state, 'action:identify:email:v1', { email: 'hazel.nutt@okta.com' });
     })(),
     (() => {
-      const { state } = startWithPkce('db-both', FORM_CAPS, { postLogin: 'form' });
+      const { state } = start('db-both', FORM_CAPS, { postLogin: 'form' });
       submit(state, 'action:identify:email:v1', { email: 'hazel.nutt@okta.com' });
       return submit(state, 'action:verify:password:v1', { password: 'Abcd@1234' });
     })(),
     (() => {
-      const { state } = startWithPkce('db-both', [...PWD_CAPS, 'action:interaction:web:v1'], { postLogin: 'web' });
+      const { state } = start('db-both', [...PWD_CAPS, 'action:interaction:web:v1'], { postLogin: 'web' });
       submit(state, 'action:identify:email:v1', { email: 'hazel.nutt@okta.com' });
       return submit(state, 'action:verify:password:v1', { password: 'Abcd@1234' });
     })(),
-    startWithPkce('enterprise-saml', ['authn:federated:v1']).first, // Path A, on initiate
+    start('enterprise-saml', ['authn:federated:v1']).first, // Path A, on initiate
   ];
 
   for (const res of pauses) {
@@ -132,24 +128,45 @@ test('a pause that opens a browser is redirect_to_web with a request_uri', () =>
   }
 });
 
-test('no PKCE at initiate means no request_uri', () => {
-  // "If the client does not include a PKCE code_challenge in the initial authorization challenge
-  // request, the authorization server MUST NOT return a request_uri in the redirect_to_web error
-  // response, as that would effectively be the same as a PAR request without PKCE."
-  const { first } = start('enterprise-saml', ['authn:federated:v1']); // no code_challenge
+test('initiate without PKCE is refused', () => {
+  // Mandatory, so the draft's "no request_uri without a code_challenge" rule is now unreachable:
+  // there is no such request to answer.
+  const state = freshState({ connection: preset('enterprise-saml'), declaredCaps: ['authn:federated:v1'] });
+  const res = initiate(state, {});
 
-  assert.equal(first.body.error, 'redirect_to_web');
-  assert.equal(first.body.request_uri, undefined);
-  // The href still carries the reference, so the flow is not broken — only the draft-defined
-  // parameter is withheld, and the note says why.
-  assert.match(entry(first, 'authn:federated:company-saml:v1').href, /request_uri=urn:/);
-  assert.match(first.note, /code_challenge/);
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error, 'invalid_request');
+  assert.match(res.body.error_description, /code_challenge/);
+  assert.equal(res.body.next, undefined, 'nothing was started, so there is nothing to continue');
+  assert.match(res.note, /public/, 'says why, not just that');
+});
+
+test('only S256 is accepted', () => {
+  const state = freshState({ connection: preset('enterprise-saml'), declaredCaps: ['authn:federated:v1'] });
+  const res = initiate(state, { code_challenge: 'abc', code_challenge_method: 'plain' });
+
+  assert.equal(res.status, 400);
+  assert.match(res.body.error_description, /S256/);
+  // plain sends the verifier as the challenge, so it protects nothing here.
+  assert.match(res.note, /verifier/);
+});
+
+test('a request_uri is still withheld if a challenge somehow never reached the session', () => {
+  // A backstop rather than a path — the refusal above means this cannot be produced by a request.
+  const state = freshState({ connection: preset('enterprise-saml'), declaredCaps: ['authn:federated:v1'] });
+  initiate(state, { ...PKCE });
+  state.codeChallenge = null;
+
+  const res = submit(state, 'authn:federated:company-saml:v1', { simulate: 'abandoned' });
+  assert.equal(res.body.error, 'redirect_to_web');
+  assert.equal(res.body.request_uri, undefined);
+  assert.match(res.note, /code_challenge/);
 });
 
 test('a leg rendered in-app is not redirect_to_web', () => {
   // The native Forms SDK renders inline. Nothing leaves the app, so the code that means "you must
   // leave the app" would be a lie.
-  const { state } = startWithPkce('db-both', [...FORM_CAPS, 'action:interaction:form:native:v1'], {
+  const { state } = start('db-both', [...FORM_CAPS, 'action:interaction:form:native:v1'], {
     postLogin: 'form',
   });
   submit(state, 'action:identify:email:v1', { email: 'hazel.nutt@okta.com' });
@@ -162,7 +179,7 @@ test('a leg rendered in-app is not redirect_to_web', () => {
 
 test('an in-app pause stays a plain continuation', () => {
   // Nothing about OTP, password or MFA involves a browser.
-  const { state } = startWithPkce('db-email-otp', [
+  const { state } = start('db-email-otp', [
     'action:identify:email:v1',
     'action:challenge:email:v1',
     'action:verify:otp:v1',
@@ -697,10 +714,15 @@ test('every decision records what it overrode and on what authority', () => {
 
   // The error-code choice is marked `ours`, not `draft`. The draft's usage text points at it and
   // its definition points away, and it is silent on what follows the browser leg — so it informs
-  // the decision without settling it. Only the PKCE precondition is genuinely normative.
+  // the decision without settling it.
   const errorCode = DECISIONS.find((d) => /redirect_to_web with a request_uri/.test(d.title));
   assert.equal(errorCode.basis, 'ours');
-  assert.equal(DECISIONS.find((d) => /No PKCE at initiate/.test(d.title)).basis, 'draft');
+
+  // Requiring PKCE is likewise ours: the draft makes it the precondition for a request_uri, not a
+  // precondition for the call. Going further is a decision, and is marked as one.
+  const pkce = DECISIONS.find((d) => /PKCE is mandatory/.test(d.title));
+  assert.equal(pkce.basis, 'ours');
+  assert.match(pkce.why, /public clients/);
 });
 
 /* ── auth_session validation ────────────────────────────────────────────── */

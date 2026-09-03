@@ -23,6 +23,9 @@ function forDisplay(body) {
 
 export function liveTransport({ tenant, capabilities }) {
   let authSession = null;
+  /* What the client declared at initiate. Some checks turn on it: a capability that was never
+     asked for is correctly absent from next[], and flagging that would be noise. */
+  let declared = [...capabilities];
   /* Sessions this client has already spent on a successful call. Replay is invisible in any one
      response, so it is tracked here and handed to the checker. */
   const spent = new Set();
@@ -50,7 +53,7 @@ export function liveTransport({ tenant, capabilities }) {
     if (env.body?.auth_session) authSession = env.body.auth_session;
 
     const exchange = {
-      context: { sessionAlreadyUsed: replayed },
+      context: { sessionAlreadyUsed: replayed, declared },
       // The UNREDACTED body is what the checker sees: it needs to know whether a code_challenge
       // was sent, and redaction only exists so the screen does not echo a password back.
       request: { method: 'POST', path, body: sent },
@@ -71,8 +74,15 @@ export function liveTransport({ tenant, capabilities }) {
     kind: 'live',
     isLive: true,
 
-    /** `body` is what the user typed and is sent verbatim — this is a real request to their tenant,
-     *  so nothing here second-guesses it. */
+    /**
+     * `body` is what the user typed and is sent verbatim — this is a real request to their tenant,
+     * so nothing here second-guesses it.
+     *
+     * The seed deliberately omits code_challenge even though the end-state spec requires it: the
+     * endpoint's schema is `additionalProperties: false` and has no PKCE parameters, so sending one
+     * is a 400 and the console would fail on its first click. The checker reports the absence
+     * instead, which is the honest thing to show.
+     */
     async start(body) {
       const sent =
         body ?? {
@@ -83,6 +93,9 @@ export function liveTransport({ tenant, capabilities }) {
           ...(tenant.scope?.trim() ? { scope: tenant.scope.trim() } : {}),
         };
       authSession = null;
+      spent.clear();
+      // Read from what was actually sent — the payload is editable, so the seed is only a default.
+      if (Array.isArray(sent.capabilities)) declared = [...sent.capabilities];
       return wrap(sent, await call('/e/authorize', sent));
     },
 

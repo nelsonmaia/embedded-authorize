@@ -18,10 +18,10 @@ npm run dev            # → http://localhost:5177
 | Script | What it does |
 |---|---|
 | `npm run dev` | Dev server on :5177, including the tenant proxy |
-| `npm test` | 131 assertions: data fidelity, the state machine, transports, proxy allowlist + log hygiene |
+| `npm test` | 154 assertions: data fidelity, the state machine, transports, proxy allowlist + log hygiene |
 | `npm run build` | Production bundle (end-state mode only — live needs the dev server) |
 | `npm run extract` | Regenerate `src/data/signupPrd.generated.json` from the committed source |
-| `node tests/e2e-browser.mjs` | 57 browser checks over CDP. Needs `npm run dev` running. |
+| `node tests/e2e-browser.mjs` | 60 browser checks over CDP. Needs `npm run dev` running. |
 
 ## Two modes, deliberately independent
 
@@ -43,9 +43,21 @@ gap** (already recorded in `KNOWN_GAPS`), or **undocumented** (real behaviour th
 entry for — which may mean the registry is stale rather than the tenant wrong). The check never
 alters the response; live mode still shows exactly what came back.
 
-Two things it catches that reading JSON side by side does not: an `auth_session` that is accepted
-after being spent — invisible in any single response, so the transport tracks it — and a `next[]`
-descriptor carrying a field the registry does not declare.
+Each exchange carries its own verdict badge — *matches the spec*, *N known gaps*, *N off spec* —
+because a running total elsewhere on the page is not where you are looking when you read a response.
+
+**PKCE is mandatory in the end state.** `code_challenge` + `code_challenge_method: S256` are
+required on initiate; spec mode refuses the call without them. The endpoint serves public clients,
+which hold no secret, and it issues an authorization code — without a challenge that code is
+redeemable by whoever intercepts it. The tenant does not merely skip enforcement: its request
+schema is `additionalProperties: false` and defines no PKCE parameters, so sending one is a `400`.
+Live mode therefore omits it (a console that fails on its first click is useless) and reports the
+absence instead.
+
+Three things it catches that reading JSON side by side does not: an `auth_session` accepted after
+being spent (invisible in any single response, so the transport tracks it), a `next[]` descriptor
+carrying a field the registry does not declare, and a challenge action withdrawn while its own code
+is still outstanding — which leaves a user whose code never arrived with no way to ask for another.
 
 Neither mode falls back to the other. If a live call fails you see it fail, because a spec-shaped
 answer would mean you were no longer testing your tenant.
@@ -93,6 +105,32 @@ Guarantees, all covered by `tests/dev-proxy.test.js`:
 CORS for `/e/authorize` is planned (Delivery 3 RFD, reusing the `allow_origins` components
 EMBL-1317 shipped for discovery). Once it lands, the browser can call tenants directly and this
 middleware can go.
+
+## Raising a finding in Jira
+
+Every finding carries a button. What it does depends on what the dev server has, and it degrades
+rather than breaking:
+
+| Configured | The button |
+|---|---|
+| `JIRA_SITE` `JIRA_PROJECT` `JIRA_EMAIL` `JIRA_TOKEN` | files the issue and links to it |
+| `JIRA_SITE` + `JIRA_PROJECT_ID` | opens a prefilled create-issue tab for you to confirm |
+| nothing | copies the ticket to the clipboard |
+
+The full ticket text always goes to the clipboard first, so a failed call never loses what you were
+about to file, and the URL path can truncate safely.
+
+**The credential never reaches the browser.** An Atlassian API token is a full-account credential —
+strictly worse than the `client_secret` the tenant proxy already refuses to forward — so it lives
+in the shell that ran `npm run dev` and nowhere else. `GET /__jira` tells the UI only whether it
+*can* create, never what the credential is; the middleware is `apply: 'serve'`, so a token-bearing
+endpoint cannot ship in a build; and the one log line per call carries method, host, status and
+duration, never the body or the `Authorization` header. Tests assert all three.
+
+`JIRA_PROJECT_ID` is the numeric id, needed only for the deep link: `CreateIssueDetails!init.jspa`
+will not resolve a project key, and a link that silently drops the prefill is worse than the
+clipboard. That URL is also unreliable on team-managed (next-gen) projects — the API path has no
+such limitation.
 
 ## UI
 
@@ -149,6 +187,8 @@ Two things are **derived**, and flagged as such wherever they appear:
 | `src/transports/simulatorTransport.js` | Wraps `engine.js` for sign-in flows |
 | `src/transports/liveTransport.js` | Real HTTP via the dev middleware |
 | `src/data/conformance.js` | Checks a live response against the contract |
+| `src/data/jiraTicket.js` | One finding as a Jira issue, and as a prefilled URL |
+| `scripts/vite-plugin-jira.js` | The dev-only endpoint that files it |
 | `src/transports/types.js` | The one interface all three satisfy |
 | `src/data/spec.js` | The contract as data: the endpoint, 25 capabilities, errors, connection presets, decisions, known gaps |
 | `src/engine/engine.js` | The sign-in state machine: negotiation, `next` enforcement, session rotation, decoys |

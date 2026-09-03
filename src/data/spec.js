@@ -101,13 +101,18 @@ export const ENDPOINT = {
     },
     {
       name: 'code_challenge',
-      required: false,
+      required: true,
       doc:
-        'PKCE. Optional to start a flow, but REQUIRED to receive a request_uri on a redirect_to_web ' +
-        'response — the draft forbids issuing one without it. Send it if any of your connections ' +
-        'may hand off to a browser.',
+        'PKCE, and mandatory. This endpoint serves public clients, which hold no secret, and it ' +
+        'issues an authorization code — so without a challenge that code is redeemable by anyone ' +
+        'who intercepts it. Also the precondition for receiving a request_uri on a redirect_to_web ' +
+        'response, which the draft forbids issuing without one.',
     },
-    { name: 'code_challenge_method', required: false, doc: 'S256.' },
+    {
+      name: 'code_challenge_method',
+      required: true,
+      doc: 'S256. `plain` is not accepted — it offers no protection against an intercepted challenge.',
+    },
     { name: 'scope', required: false, doc: 'Standard OAuth scope, carried through to the issued code.' },
     { name: 'audience', required: false, doc: 'Standard Auth0 audience.' },
     {
@@ -990,27 +995,73 @@ export const DECISIONS = [
     source: 'PWD',
   },
   {
-    title: 'No PKCE at initiate means no request_uri',
-    basis: 'draft',
+    title: 'PKCE is mandatory at initiate',
+    basis: 'ours',
     conflict:
-      'No example in any of the three documents sends a code_challenge on the initiate call, yet ' +
-      'REDIR returns a request_uri.',
+      'No example in any of the source documents sends a code_challenge on the initiate call, and ' +
+      'the tenant accepts a request without one — yet REDIR shows a request_uri coming back, which ' +
+      'the draft forbids issuing to a client that sent no challenge.',
     decision:
-      'The initiate request carries code_challenge + code_challenge_method. Without them the ' +
-      'handoff still returns redirect_to_web and an href, but the top-level request_uri is ' +
-      'withheld.',
+      'code_challenge and code_challenge_method are REQUIRED on initiate. Without them the request ' +
+      'is refused with 400 invalid_request rather than proceeding. Only S256 is accepted.',
     why:
-      'Normative: "If the client does not include a PKCE code_challenge in the initial ' +
-      'authorization challenge request, the authorization server MUST NOT return a request_uri in ' +
-      'the redirect_to_web error response, as that would effectively be the same as a PAR request ' +
-      'without PKCE." Withholding the parameter rather than refusing the request follows the ' +
-      'draft\'s own fallback — a client with no request_uri starts its own authorization code flow ' +
-      'with PKCE.',
+      'The draft frames this endpoint around public clients — "Public clients cannot hold static ' +
+      'credentials" — and it issues an authorization code redeemed at POST /oauth/token. An ' +
+      'authorization code issued to a public client with no challenge is redeemable by anyone who ' +
+      'intercepts it, which is the attack PKCE exists to close and why RFC 8252 requires it of ' +
+      'native apps.\n\n' +
+      'Making it a precondition rather than an option also removes a branch: the draft\'s rule that ' +
+      'a request_uri MUST NOT be returned without a code_challenge can no longer be reached, ' +
+      'because there is no such request. The engine still withholds the reference if it somehow ' +
+      'is, as a backstop rather than a path.',
     source: 'DRAFT',
   },
 ];
 
 export const KNOWN_GAPS = [
+  {
+    title: 'PKCE cannot be sent to /e/authorize',
+    severity: 'security',
+    spec:
+      'code_challenge and code_challenge_method are required on the initiate call, so an ' +
+      'authorization code is never issued to a flow that cannot prove possession of the verifier.',
+    actual:
+      'Not merely unenforced — the request schema REJECTS them. The initiate body is ' +
+      'additionalProperties: false and defines no PKCE parameters, so a client that tries to send ' +
+      'one gets 400 invalid_request, "data must NOT have additional properties". Omitting it is ' +
+      'accepted and the flow runs through to an authorization code. Both verified 2026-09-03 on ' +
+      'nelson.jp.auth0.com; `scope` on the same request is accepted, so it is these fields ' +
+      'specifically.',
+    impact:
+      'The endpoint serves public clients, which hold no secret. A code issued without a challenge ' +
+      'is redeemable by whoever intercepts it — on a native app, any other app registered for the ' +
+      'same redirect scheme. A client cannot opt into protecting itself.\n\n' +
+      'It also makes one draft rule unreachable in the other direction: "the authorization server ' +
+      'MUST NOT return a request_uri … if the client does not include a PKCE code_challenge in the ' +
+      'initial authorization challenge request." Since no client can include one, no redirect_to_web ' +
+      'response may ever legally carry a request_uri — which is the mechanism REDIR is built on. ' +
+      'Closing this needs a schema change before the federation work can ship.',
+    source: 'DRAFT',
+  },
+  {
+    title: 'The challenge is withdrawn once its own code is outstanding',
+    severity: 'usability',
+    spec:
+      'The challenge action stays in `next` beside verify:otp while a code is outstanding, so the ' +
+      'user can ask for another one. All 36 responses in the signup model that offer verify:otp ' +
+      're-offer the challenge next to it, and the Password RFD says the same for a connection with ' +
+      'more than one method. Recorded as a settled decision.',
+    actual:
+      'After action:challenge:email:v1 the tenant answers with verify:otp ALONE, even when the ' +
+      'client declared action:challenge:email:v1. Observed 2026-09-03 on nelson.jp.auth0.com.',
+    impact:
+      'A user whose code never arrives has no way forward but restarting the whole flow — there is ' +
+      'no resend, because the only action that could send another one is no longer in the ' +
+      'allow-list. The Password RFD lists OTP resend among its non-goals, so this is most likely ' +
+      'unbuilt rather than wrong; it is the single largest behavioural difference between spec ' +
+      'mode and the tenant today.',
+    source: 'PWD',
+  },
   {
     title: 'error_description carries machine codes, not developer prose',
     severity: 'spec-deviation',
