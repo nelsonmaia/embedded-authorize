@@ -18,7 +18,7 @@ npm run dev            # → http://localhost:5177
 | Script | What it does |
 |---|---|
 | `npm run dev` | Dev server on :5177, including the tenant proxy |
-| `npm test` | 190 assertions: data fidelity, the state machine, transports, proxy allowlist + log hygiene |
+| `npm test` | 192 assertions: data fidelity, the state machine, transports, proxy allowlist + log hygiene |
 | `npm run build` | Production bundle into `dist/` |
 | `npm start` | Serve the build plus the tenant proxy (see **Deploying**) |
 | `npm run extract` | Regenerate `src/data/signupPrd.generated.json` from the committed source |
@@ -145,7 +145,7 @@ silently on the dev server alone. Copy `.env.example` to `.env` to start; `.env`
 
 | | |
 |---|---|
-| `PLAYGROUND_ALLOWED_HOSTS` | Exact tenant hosts the proxy may reach, comma separated. **Required to deploy**; optional in dev. |
+| `PLAYGROUND_ALLOWED_HOSTS` | The **Auth0 tenant** hosts the proxy may reach, comma separated — not this app's own URL. A full URL is reduced to its hostname. **Required to deploy**; optional in dev. |
 | `TENANT_RATE_LIMIT` | Tenant calls per minute per address. Deployment only, default 60. |
 | `PORT` | For `node server.js`, default 8080. The dev server is always :5177. |
 

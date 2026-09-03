@@ -15,7 +15,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 
-import { forward } from '../scripts/tenant-proxy/forward.js';
+import { forward, hostOf } from '../scripts/tenant-proxy/forward.js';
 import { createConsoleServer } from '../server.js';
 
 function fakeRes() {
@@ -95,6 +95,40 @@ test('strict mode does not widen what a path or method may be', async () => {
     await forward({ ...envelope('nelson.jp.auth0.com'), ...patch }, res, { strict: true, allowedHosts, doFetch: spyFetch });
     assert.equal(res.payload.error, error);
   }
+});
+
+test('a tenant URL configures the allowlist as well as a bare hostname', async () => {
+  // The obvious way to fill in PLAYGROUND_ALLOWED_HOSTS is to paste the tenant URL. Normalising
+  // only the incoming domain would refuse every call while the value looked right in the error.
+  for (const written of [
+    'nelson.jp.auth0.com',
+    'https://nelson.jp.auth0.com',
+    'https://nelson.jp.auth0.com/',
+    'HTTPS://Nelson.JP.Auth0.com/',
+  ]) {
+    reached.length = 0;
+    const res = fakeRes();
+    await forward(envelope('nelson.jp.auth0.com'), res, { strict: true, allowedHosts: [written], doFetch: spyFetch });
+    assert.equal(res.payload.ok, true, `configured as ${written}`);
+    assert.deepEqual(reached, ['https://nelson.jp.auth0.com/e/authorize']);
+  }
+});
+
+test('normalising the allowlist does not make it looser', async () => {
+  // A host that merely contains the allowed one, or differs in domain, must still be refused.
+  for (const attacker of ['nelson.jp.auth0.com.evil.example', 'evil-nelson.jp.auth0.com']) {
+    reached.length = 0;
+    const res = fakeRes();
+    await forward(envelope(attacker), res, {
+      strict: true,
+      allowedHosts: ['https://nelson.jp.auth0.com/'],
+      doFetch: spyFetch,
+    });
+    assert.equal(res.payload.error, 'host_not_allowed', attacker);
+    assert.equal(reached.length, 0);
+  }
+  assert.equal(hostOf(''), '');
+  assert.equal(hostOf(undefined), '');
 });
 
 /* ── the server ─────────────────────────────────────────────────────────── */

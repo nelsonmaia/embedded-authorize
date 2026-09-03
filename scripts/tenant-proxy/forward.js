@@ -33,16 +33,28 @@ const PASS_HEADERS = [
   'location',
 ];
 
+/**
+ * A bare hostname, from whatever was written.
+ *
+ * Applied to BOTH sides of the comparison. The obvious way to configure an allowlist is to paste
+ * the tenant URL, and if only the incoming domain were normalised, `https://tenant.auth0.com/`
+ * would refuse every call while looking exactly right in the error message.
+ */
+export const hostOf = (value) =>
+  String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/\/.*$/, '')
+    .replace(/:\d+$/, '');
+
 function extraHosts() {
-  return (process.env.PLAYGROUND_ALLOWED_HOSTS || '')
-    .split(',')
-    .map((h) => h.trim().toLowerCase())
-    .filter(Boolean);
+  return (process.env.PLAYGROUND_ALLOWED_HOSTS || '').split(',').map(hostOf).filter(Boolean);
 }
 
 function hostAllowed(host, { strict, allowedHosts }) {
   if (!HOSTNAME_RE.test(host)) return false;
-  const named = allowedHosts ?? extraHosts();
+  const named = (allowedHosts ?? extraHosts()).map(hostOf).filter(Boolean);
   // Exact match only, in either mode — a wildcard built from user input is how open relays happen.
   if (named.includes(host)) return true;
   // The convenience defaults are a dev affordance. A deployment names its tenants or forwards
@@ -95,17 +107,13 @@ export async function forward(
     });
   }
 
-  const host = String(envelope.domain || '')
-    .trim()
-    .toLowerCase()
-    .replace(/^https?:\/\//, '')
-    .replace(/\/.*$/, '');
+  const host = hostOf(envelope.domain);
   const rawPath = String(envelope.path || '');
   const method = String(envelope.method || 'POST').toUpperCase();
 
   if (!host) return send(res, 400, { ok: false, error: 'missing_domain' });
 
-  const named = allowedHosts ?? extraHosts();
+  const named = (allowedHosts ?? extraHosts()).map(hostOf).filter(Boolean);
 
   /* A strict deployment with nothing named forwards nothing. Failing closed with an explanation
      beats quietly relaying to whatever was typed, and tells the operator exactly what to set. */
