@@ -18,7 +18,7 @@ npm run dev            # → http://localhost:5177
 | Script | What it does |
 |---|---|
 | `npm run dev` | Dev server on :5177, including the tenant proxy |
-| `npm test` | 181 assertions: data fidelity, the state machine, transports, proxy allowlist + log hygiene |
+| `npm test` | 190 assertions: data fidelity, the state machine, transports, proxy allowlist + log hygiene |
 | `npm run build` | Production bundle into `dist/` |
 | `npm start` | Serve the build plus the tenant proxy (see **Deploying**) |
 | `npm run extract` | Regenerate `src/data/signupPrd.generated.json` from the committed source |
@@ -129,10 +129,28 @@ apply: exact tenant hosts, named by the operator, or nothing. It also rate limit
 Everything else the proxy enforces is unchanged and shared: the path allowlist, GET/POST only, the
 `client_secret` refusal, and never logging a body.
 
-**Filing findings in Jira is not available in a deployment.** The connection holds one access token
-in process memory — right for a dev server with one user, wrong for a deployment with several,
-where everyone would file as whoever connected first. `/__jira` says so rather than 404ing, so the
-console can explain instead of the button silently failing. Findings still copy to the clipboard.
+**Filing findings in Jira works in a deployment**, and needs nothing configured. Tokens are held per
+browser session rather than in module state, so each person connects as themselves — see
+`scripts/jira-mcp/sessions.js`. The session id is an `httpOnly` cookie, `Secure` whenever the
+request arrived over HTTPS, and `SameSite=Lax` because the OAuth callback is a top-level cross-site
+navigation back from Atlassian that `Strict` would break. Tokens stay in memory: a restart signs
+everyone out, which costs a click and leaves no credential to outlive the process.
+
+### Configuration
+
+Settings are read from the environment, and from a `.env` beside the server if there is one —
+loaded explicitly by both `server.js` and `vite.config.js`, because Vite reads `.env` only for
+`VITE_`-prefixed client values and never populates `process.env`, so an unloaded `.env` would fail
+silently on the dev server alone. Copy `.env.example` to `.env` to start; `.env` is gitignored.
+
+| | |
+|---|---|
+| `PLAYGROUND_ALLOWED_HOSTS` | Exact tenant hosts the proxy may reach, comma separated. **Required to deploy**; optional in dev. |
+| `TENANT_RATE_LIMIT` | Tenant calls per minute per address. Deployment only, default 60. |
+| `PORT` | For `node server.js`, default 8080. The dev server is always :5177. |
+
+Nothing in that list is a secret, and that is the point: the proxy adds no credentials of its own,
+and the Jira connection registers its own OAuth client and holds a per-browser token.
 
 CORS for `/e/authorize` is planned (Delivery 3 RFD, reusing the `allow_origins` components
 EMBL-1317 shipped for discovery). Once it lands, the browser can call tenants directly and this

@@ -5,12 +5,9 @@
  * development that gap is filled by a Vite middleware; here it is filled by the same `forward()`
  * function, imported rather than reimplemented, so what you tested locally is what runs.
  *
- * What is deliberately NOT here:
- *
- *   /__jira   The Jira connection holds one access token in process memory. That is correct for a
- *             dev server with one user and badly wrong for a deployment with several: whoever
- *             connected first would author everyone's tickets. Findings still copy to the
- *             clipboard, and filing them stays a local activity until it is per-session.
+ * /__jira is mounted here too. It is safe to because tokens are held per browser session rather
+ * than in module state -- see scripts/jira-mcp/sessions.js. Nothing about it needs configuring:
+ * the server registers its own OAuth client on first use and holds no secret.
  *
  * Run it with:  node server.js        (PORT, default 8080)
  *
@@ -27,6 +24,15 @@ import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { forward, readBody, send } from './scripts/tenant-proxy/forward.js';
+import { handleJira } from './scripts/jira-mcp/handler.js';
+
+/* A .env beside the server, if there is one. Without this the variables below only work when
+   exported into the shell, which is a surprising way for a documented setting to fail. */
+try {
+  process.loadEnvFile(fileURLToPath(new URL('./.env', import.meta.url)));
+} catch {
+  /* no .env — the environment is expected to carry it */
+}
 
 const ROOT = resolve(fileURLToPath(new URL('./dist', import.meta.url)));
 const PORT = Number(process.env.PORT || 8080);
@@ -144,16 +150,11 @@ export const createConsoleServer = () =>
       });
     }
 
-    /* Answered rather than left to 404, so the console can say why the button is missing instead
-       of parsing an HTML error page and reporting a syntax error. */
-    if (pathname === '/__jira') {
-      return send(res, 200, {
-        connected: false,
-        unavailable: true,
-        detail:
-          'Filing findings in Jira is a local-dev feature. The connection holds one token in ' +
-          'process memory, which would mean everyone here filed as whoever connected first.',
-      });
+    if (pathname === '/__jira' || pathname.startsWith('/__jira/')) {
+      // The handler expects a URL relative to its mount point, as the Vite middleware gives it.
+      req.url = req.url.slice('/__jira'.length) || '/';
+      if (await handleJira(req, res)) return;
+      return send(res, 404, { ok: false, error: 'unknown_route' });
     }
 
     if (req.method !== 'GET' && req.method !== 'HEAD') {

@@ -124,14 +124,33 @@ test('GET /__tenant answers as itself, not as a static file host', async () => {
   });
 });
 
-test('the Jira endpoint says it is unavailable, and why', async () => {
-  // A deployed console must not offer it: one token in process memory would mean everyone here
-  // filed as whoever connected first.
+test('the Jira endpoint is served, and issues this browser its own session', async () => {
+  // It is mounted in a deployment only because tokens are per browser session. If that ever
+  // regresses to module state, the second visitor inherits the first visitor's Jira account.
   await withServer(async (base) => {
-    const body = await fetch(`${base}/__jira`).then((r) => r.json());
+    const res = await fetch(`${base}/__jira`);
+    const body = await res.json();
+
+    assert.equal(res.status, 200);
     assert.equal(body.connected, false);
-    assert.equal(body.unavailable, true);
-    assert.match(body.detail, /memory|local/i);
+    assert.equal(body.transport, 'mcp');
+
+    const cookie = res.headers.get('set-cookie');
+    assert.match(cookie, /ea_jira=/);
+    assert.match(cookie, /HttpOnly/);
+    assert.match(cookie, /SameSite=Lax/);
+
+    // Two fetches with no cookie are two different browsers, and get two different sessions.
+    const other = await fetch(`${base}/__jira`);
+    assert.notEqual(other.headers.get('set-cookie'), cookie);
+  });
+});
+
+test('an unknown Jira route 404s as JSON rather than falling through to the app', async () => {
+  await withServer(async (base) => {
+    const res = await fetch(`${base}/__jira/nope`);
+    assert.equal(res.status, 404);
+    assert.match(res.headers.get('content-type'), /application\/json/);
   });
 });
 
