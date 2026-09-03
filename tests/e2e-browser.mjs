@@ -601,6 +601,42 @@ try {
   );
   check('the verdict is on the exchange, not in a summary box', conformance.noSummaryBox, JSON.stringify(conformance));
 
+  /* ── connecting to Jira ───────────────────────────────────────────────── */
+
+  const jira = await cdp.eval(`
+    const t = document.body.innerText;
+    const connect = [...document.querySelectorAll('button')].find(b => /Connect to Jira/.test(b.textContent));
+    return {
+      // Nothing is configured in a bare checkout, so the offer must be to connect — not a dead
+      // button, and not a demand for a token that no longer exists anywhere in this app.
+      offersConnect: !!connect,
+      explainsTheFlow: /PKCE/.test(t) && /no API token|No API token/i.test(t),
+      // The old design needed six environment variables. If any name survives, something still
+      // reads them and the connect path is not actually the only one.
+      noEnvVarNames: !/JIRA_SITE|JIRA_TOKEN|JIRA_PROJECT|JIRA_EMAIL|JIRA_ISSUETYPE/.test(t),
+      // Pickers appear only once connected; offering an empty project list would be a dead end.
+      noPickersBeforeConnecting: !/Choose a project/.test(t),
+    };
+  `);
+  check('a bare checkout offers to connect, not to configure', jira.offersConnect, JSON.stringify(jira));
+  check('it says how the connection is authorized', jira.explainsTheFlow, JSON.stringify(jira));
+  check('no environment variable survives in the UI', jira.noEnvVarNames, JSON.stringify(jira));
+  check('no project picker before there is a connection', jira.noPickersBeforeConnecting, JSON.stringify(jira));
+
+  // The status endpoint is what the button reads. It must never carry a credential, whatever the
+  // connection state — this asserts on the wire, not on the source.
+  const status = await cdp.eval(`
+    const r = await fetch('/__jira').then(r => r.json());
+    const body = JSON.stringify(r);
+    return {
+      answers: typeof r.connected === 'boolean',
+      overMcp: r.transport === 'mcp',
+      noCredential: !/access_token|refresh_token|accessToken|refreshToken|Bearer|client_secret/i.test(body),
+    };
+  `);
+  check('the dev server reports the connection over MCP', status.answers && status.overMcp, JSON.stringify(status));
+  check('the status never carries a credential', status.noCredential, JSON.stringify(status));
+
   const realErrors = cdp.consoleErrors.filter((e) => !/favicon|React DevTools/i.test(e));
   check('no console errors', realErrors.length === 0, realErrors.join('\n    '));
 } catch (err) {

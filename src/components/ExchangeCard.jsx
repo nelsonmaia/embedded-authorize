@@ -100,14 +100,13 @@ function verdictFor(result) {
 }
 
 /**
- * File a finding as a Jira issue, degrading by what is configured.
+ * File a finding as a Jira issue, degrading by what the connection can do.
  *
- *   token set        → POST /__jira, the issue is created and linked
- *   site + id only   → a prefilled create-issue tab, so a human presses Create
- *   nothing set      → the ticket goes to the clipboard
+ *   connected + a project chosen → filed over MCP as you, and linked
+ *   anything else                → the ticket goes to the clipboard
  *
- * The credential never reaches this component: the dev server holds it and only tells us whether
- * it can create. See scripts/vite-plugin-jira.js.
+ * The credential never reaches this component. The dev server holds a token belonging to whoever
+ * pressed Connect, and only tells us whether it can file. See scripts/vite-plugin-jira.js.
  */
 function RaiseButton({ finding, exchange, tenant, jira }) {
   const [state, setState] = useState({ status: 'idle' });
@@ -121,8 +120,8 @@ function RaiseButton({ finding, exchange, tenant, jira }) {
     });
     if (!ticket) return;
 
-    // The full text always goes to the clipboard: the URL path truncates it, and a failed API
-    // call should never lose what you were about to file.
+    // The full text always goes to the clipboard first: a failed call should never lose what you
+    // were about to file, and the fallback URL truncates it.
     try {
       await navigator.clipboard.writeText(`${ticket.summary}\n\n${ticket.description}`);
     } catch { /* insecure context — the other paths still work */ }
@@ -130,58 +129,62 @@ function RaiseButton({ finding, exchange, tenant, jira }) {
     if (jira?.canCreate) {
       setState({ status: 'filing' });
       try {
-        const res = await fetch('/__jira', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(ticket),
-        }).then((r) => r.json());
-        setState(res.ok ? { status: 'filed', ...res } : { status: 'failed', detail: res.detail });
+        const res = await jira.file(ticket);
+        if (res.ok) return setState({ status: 'filed', key: res.key ?? 'Filed', url: res.url });
+        // Jira refused it. Offer the prefilled page rather than making you retype the ticket.
+        setState({
+          status: 'failed',
+          detail: res.detail ?? 'Jira rejected the issue.',
+          url: createIssueUrl({
+            site: jira.selection?.siteUrl,
+            projectId: jira.selection?.projectId,
+            ticket,
+          }),
+        });
       } catch (e) {
         setState({ status: 'failed', detail: e.message });
       }
       return;
     }
 
-    const url = createIssueUrl({
-      site: jira?.site,
-      projectId: jira?.projectId,
-      issueTypeId: jira?.issueTypeId,
-      ticket,
-    });
-    if (url) {
-      window.open(url, '_blank', 'noopener');
-      setState({ status: 'opened' });
-    } else {
-      setState({ status: 'copied' });
-    }
+    setState({ status: 'copied' });
     setTimeout(() => setState({ status: 'idle' }), 2500);
   };
 
   if (state.status === 'filed') {
-    return (
-      <a
-        href={state.url}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="inline-flex shrink-0 items-center gap-1 self-start rounded border border-[hsl(var(--ok))]/40 bg-[hsl(var(--ok))]/10 px-2 py-1 text-[11px] font-medium text-[hsl(var(--ok))]"
-      >
+    const badge = (
+      <>
         <ExternalLink className="h-3 w-3" /> {state.key}
+      </>
+    );
+    const className =
+      'inline-flex shrink-0 items-center gap-1 self-start rounded border border-[hsl(var(--ok))]/40 bg-[hsl(var(--ok))]/10 px-2 py-1 text-[11px] font-medium text-[hsl(var(--ok))]';
+
+    // A ticket with no resolvable URL is still filed; say so rather than offering a dead link.
+    return state.url ? (
+      <a href={state.url} target="_blank" rel="noopener noreferrer" className={className}>
+        {badge}
       </a>
+    ) : (
+      <span className={className}>{badge}</span>
     );
   }
 
   const label = {
-    idle: jira?.canCreate ? 'Raise in Jira' : jira?.projectId ? 'Raise in Jira' : 'Copy as ticket',
+    idle: jira?.canCreate ? 'Raise in Jira' : jira?.connected ? 'Pick a project first' : 'Copy as ticket',
     filing: 'Filing…',
-    opened: 'Opened in Jira',
     copied: 'Copied',
-    failed: 'Failed — copied',
+    failed: state.url ? 'Failed — open in Jira' : 'Failed — copied',
   }[state.status];
+
+  const onClick = state.status === 'failed' && state.url
+    ? () => window.open(state.url, '_blank', 'noopener')
+    : raise;
 
   return (
     <button
       type="button"
-      onClick={raise}
+      onClick={onClick}
       disabled={state.status === 'filing'}
       title={state.detail || 'File this finding as a Jira issue'}
       className={cn(

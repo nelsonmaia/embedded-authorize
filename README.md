@@ -18,10 +18,10 @@ npm run dev            # → http://localhost:5177
 | Script | What it does |
 |---|---|
 | `npm run dev` | Dev server on :5177, including the tenant proxy |
-| `npm test` | 154 assertions: data fidelity, the state machine, transports, proxy allowlist + log hygiene |
+| `npm test` | 172 assertions: data fidelity, the state machine, transports, proxy allowlist + log hygiene |
 | `npm run build` | Production bundle (end-state mode only — live needs the dev server) |
 | `npm run extract` | Regenerate `src/data/signupPrd.generated.json` from the committed source |
-| `node tests/e2e-browser.mjs` | 60 browser checks over CDP. Needs `npm run dev` running. |
+| `node tests/e2e-browser.mjs` | 66 browser checks over CDP. Needs `npm run dev` running. |
 
 ## Two modes, deliberately independent
 
@@ -108,29 +108,52 @@ middleware can go.
 
 ## Raising a finding in Jira
 
-Every finding carries a button. What it does depends on what the dev server has, and it degrades
-rather than breaking:
+Every finding carries a button. Press **Connect to Jira** once, pick a project, and findings file
+themselves as issues authored by you.
 
-| Configured | The button |
+There is nothing to configure — no API token, no project id looked up in an admin screen, no
+environment variables. That is the point, and it took some finding.
+
+**Why MCP and not the REST API.** Filing an issue needs a credential; the only question is whose.
+An Atlassian API token is a *full account* credential that each person has to paste into a shell.
+Classic 3LO replaces it with a `client_secret`, and since there is no public-client or PKCE flow
+documented for it, that means one *shared* secret sitting next to the repo — worse than what it
+replaced, for a tool each developer runs locally. The Atlassian Remote MCP Server is the one path
+with neither, and every step of that was verified against the live endpoints:
+
+| | |
 |---|---|
-| `JIRA_SITE` `JIRA_PROJECT` `JIRA_EMAIL` `JIRA_TOKEN` | files the issue and links to it |
-| `JIRA_SITE` + `JIRA_PROJECT_ID` | opens a prefilled create-issue tab for you to confirm |
-| nothing | copies the ticket to the clipboard |
+| `token_endpoint_auth_methods_supported` | includes `"none"` — public client, no secret |
+| `code_challenge_methods_supported` | `["S256"]` — PKCE, and only the strong method |
+| `registration_endpoint` | present — the dev server registers itself |
+| a `http://localhost/…` redirect URI | accepted — nothing to host |
 
-The full ticket text always goes to the clipboard first, so a failed call never loses what you were
-about to file, and the URL path can truncate safely.
+So the flow is authorization code + PKCE `S256` against a client registered on first use, which is
+the same shape this console argues for at `/e/authorize`. The token belongs to whoever consented,
+is scoped to `read:` / `write:jira:agent-interface` rather than their whole account, and is
+revocable from their own Atlassian account. Discovery is not hardcoded: an unauthenticated call
+answers `401` with a `WWW-Authenticate` naming the protected-resource metadata (RFC 9728), which
+names the authorization server, which describes its own endpoints.
 
-**The credential never reaches the browser.** An Atlassian API token is a full-account credential —
-strictly worse than the `client_secret` the tenant proxy already refuses to forward — so it lives
-in the shell that ran `npm run dev` and nowhere else. `GET /__jira` tells the UI only whether it
-*can* create, never what the credential is; the middleware is `apply: 'serve'`, so a token-bearing
-endpoint cannot ship in a build; and the one log line per call carries method, host, status and
-duration, never the body or the `Authorization` header. Tests assert all three.
+**Tokens are never written to disk.** They live in memory for the lifetime of the dev server; a
+refresh token in the working tree would be exactly the durable credential this design removes.
+Restarting `npm run dev` costs one click. Only the client registration is cached, under
+`node_modules/.cache/`, and a client id is not a secret.
 
-`JIRA_PROJECT_ID` is the numeric id, needed only for the deep link: `CreateIssueDetails!init.jspa`
-will not resolve a project key, and a link that silently drops the prefill is worse than the
-clipboard. That URL is also unreliable on team-managed (next-gen) projects — the API path has no
-such limitation.
+**The credential never reaches the browser.** `GET /__jira` reports whether a connection exists and
+who it belongs to, never the token. The middleware is `apply: 'serve'`, so a token-bearing endpoint
+cannot ship in a build. The one log line per call carries the tool and duration, never a header or
+a body. Tests assert all three, on the wire as well as in the source.
+
+The full ticket text always goes to the clipboard first, so a rejected call never loses what you
+were about to file. If Jira refuses the issue the button offers a prefilled create-issue page
+instead — which needs the numeric project id, because `CreateIssueDetails!init.jspa` will not
+resolve a project key.
+
+Argument names are not guessed at. Each call is fitted to the schema the server advertises through
+`tools/list`: unknown keys are dropped and a few known aliases tried in order, so a server-side
+rename surfaces as the tool's own error text rather than a silent failure.
+`GET /__jira/tools` shows what the tools actually accept.
 
 ## UI
 

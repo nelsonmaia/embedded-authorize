@@ -11,12 +11,14 @@ import { ExchangeCard } from '@/components/ExchangeCard.jsx';
 import { BrowserLeg } from '@/components/BrowserLeg.jsx';
 import { NextBar } from '@/components/NextBar.jsx';
 import { TenantBar } from '@/components/TenantBar.jsx';
+import { JiraBar } from '@/components/JiraBar.jsx';
 import { FlowPicker } from '@/components/FlowPicker.jsx';
 import { cannedTransport } from '@/transports/cannedTransport.js';
 import { simulatorTransport, initiateSeed } from '@/transports/simulatorTransport.js';
 import { liveTransport } from '@/transports/liveTransport.js';
 import { flowById } from '@/data/flows.js';
 import { LIVE_CAPABILITIES } from '@/data/spec.js';
+import { useJira } from '@/hooks/useJira.js';
 
 const pretty = (o) => JSON.stringify(o, null, 2);
 
@@ -34,9 +36,9 @@ export function ConsoleView({ mode, flowId, variantId, onFlowChange, onVariantCh
   const [busy, setBusy] = useState(false);
   const [outOfOrder, setOutOfOrder] = useState(false);
   const [nonce, setNonce] = useState(0);
-  /* What the dev server can do about Jira. Probed once; null until it answers, which is why the
-     button renders its clipboard label rather than flickering between modes. */
-  const [jira, setJira] = useState(null);
+  /* The Jira connection, only asked for in live mode — spec mode has no tenant to find a gap in.
+     Null until the dev server answers, which is why the button does not flicker between labels. */
+  const jira = useJira({ enabled: mode === 'live' });
 
   const transport = useRef(null);
   const seedRef = useRef(''); // the untouched suggestion, for "Reset payload"
@@ -76,18 +78,6 @@ export function ConsoleView({ mode, flowId, variantId, onFlowChange, onVariantCh
     setOutOfOrder(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
-
-  useEffect(() => {
-    if (mode !== 'live') return;
-    let alive = true;
-    fetch('/__jira')
-      .then((r) => r.json())
-      .then((cfg) => alive && setJira(cfg))
-      .catch(() => alive && setJira({ canCreate: false })); // no dev server, or no plugin
-    return () => {
-      alive = false;
-    };
-  }, [mode]);
 
   const parseError = useMemo(() => {
     if (!draft.trim()) return 'Request body is empty.';
@@ -177,7 +167,14 @@ export function ConsoleView({ mode, flowId, variantId, onFlowChange, onVariantCh
   return (
     <div className="mx-auto w-full max-w-5xl space-y-5 px-6 py-6">
       {mode === 'live' ? (
-        <TenantBar tenant={tenant} onChange={onTenantChange} />
+        <>
+          <TenantBar tenant={tenant} onChange={onTenantChange} />
+          {/* Where findings go. Sits under the tenant fields because it is the same kind of
+              setting: something you set once and then stop looking at. */}
+          <div className="rounded-lg border border-dashed px-4 py-3">
+            <JiraBar jira={jira} />
+          </div>
+        </>
       ) : (
         <FlowPicker
           flowId={flowId}
