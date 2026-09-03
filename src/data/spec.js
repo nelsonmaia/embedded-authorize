@@ -101,13 +101,18 @@ export const ENDPOINT = {
     },
     {
       name: 'code_challenge',
-      required: false,
+      required: true,
       doc:
-        'PKCE. Optional to start a flow, but REQUIRED to receive a request_uri on a redirect_to_web ' +
-        'response — the draft forbids issuing one without it. Send it if any of your connections ' +
-        'may hand off to a browser.',
+        'PKCE, and mandatory. This endpoint serves public clients, which hold no secret, and it ' +
+        'issues an authorization code — so without a challenge that code is redeemable by anyone ' +
+        'who intercepts it. Also the precondition for receiving a request_uri on a redirect_to_web ' +
+        'response, which the draft forbids issuing without one.',
     },
-    { name: 'code_challenge_method', required: false, doc: 'S256.' },
+    {
+      name: 'code_challenge_method',
+      required: true,
+      doc: 'S256. `plain` is not accepted — it offers no protection against an intercepted challenge.',
+    },
     { name: 'scope', required: false, doc: 'Standard OAuth scope, carried through to the issued code.' },
     { name: 'audience', required: false, doc: 'Standard Auth0 audience.' },
     {
@@ -159,7 +164,7 @@ export const CAPABILITIES = [
     status: 'live',
     source: 'D2',
     request: [{ name: 'email', example: 'hazel.nutt@okta.com', required: true }],
-    emits: [],
+    emits: [{ name: 'optional', value: 'true when the step may be skipped' }],
     doc:
       'Resolves whether the user exists, via auth0-users, and seals the result into the session ' +
       '(user_id + identifiers, or decoy:true). Returns the SAME `next` either way — this is the ' +
@@ -172,7 +177,7 @@ export const CAPABILITIES = [
     status: 'negotiated',
     source: 'PWD',
     request: [{ name: 'phone_number', example: '+15551234567', required: true }],
-    emits: [],
+    emits: [{ name: 'optional', value: 'true when the step may be skipped' }],
     doc:
       'The capability negotiates and appears in `next`, but no handler is registered — it ' +
       'resolves to 501 not_implemented. Called out explicitly as a pre-existing gap in the ' +
@@ -203,7 +208,7 @@ export const CAPABILITIES = [
     source: 'D2',
     request: [],
     emits: [
-      { name: 'channel', value: 'email' },
+      { name: 'index', value: '0' },
       { name: 'identifier', value: '<masked>' },
     ],
     doc:
@@ -358,7 +363,10 @@ export const CAPABILITIES = [
     status: 'spec',
     source: 'SIGNUP',
     request: [{ name: 'password', example: 'Abcd@1234', required: true, secret: true }],
-    emits: [],
+    emits: [
+      { name: 'complexity', value: 'the connection password policy' },
+      { name: 'optional', value: 'true when the step may be skipped' },
+    ],
     doc: 'Sets the password during signup, after the identifier has been verified.',
   },
   {
@@ -672,6 +680,14 @@ export const ERRORS = {
       'body client_id does not match the one sealed in the session — deliberately the generic ' +
       'message, so it never confirms the session otherwise decrypted fine.',
   },
+  not_implemented: {
+    http: 501,
+    kind: 'gap',
+    doc:
+      'The action negotiated, was advertised in `next`, and then had no handler behind it. A ' +
+      'client that trusts `next` — which is the contract — cannot avoid this, so it is a gap in ' +
+      'the server rather than a mistake by the caller. Reached today by identify:phone.',
+  },
   server_error: {
     http: 500,
     kind: 'bug',
@@ -979,27 +995,73 @@ export const DECISIONS = [
     source: 'PWD',
   },
   {
-    title: 'No PKCE at initiate means no request_uri',
-    basis: 'draft',
+    title: 'PKCE is mandatory at initiate',
+    basis: 'ours',
     conflict:
-      'No example in any of the three documents sends a code_challenge on the initiate call, yet ' +
-      'REDIR returns a request_uri.',
+      'No example in any of the source documents sends a code_challenge on the initiate call, and ' +
+      'the tenant accepts a request without one — yet REDIR shows a request_uri coming back, which ' +
+      'the draft forbids issuing to a client that sent no challenge.',
     decision:
-      'The initiate request carries code_challenge + code_challenge_method. Without them the ' +
-      'handoff still returns redirect_to_web and an href, but the top-level request_uri is ' +
-      'withheld.',
+      'code_challenge and code_challenge_method are REQUIRED on initiate. Without them the request ' +
+      'is refused with 400 invalid_request rather than proceeding. Only S256 is accepted.',
     why:
-      'Normative: "If the client does not include a PKCE code_challenge in the initial ' +
-      'authorization challenge request, the authorization server MUST NOT return a request_uri in ' +
-      'the redirect_to_web error response, as that would effectively be the same as a PAR request ' +
-      'without PKCE." Withholding the parameter rather than refusing the request follows the ' +
-      'draft\'s own fallback — a client with no request_uri starts its own authorization code flow ' +
-      'with PKCE.',
+      'The draft frames this endpoint around public clients — "Public clients cannot hold static ' +
+      'credentials" — and it issues an authorization code redeemed at POST /oauth/token. An ' +
+      'authorization code issued to a public client with no challenge is redeemable by anyone who ' +
+      'intercepts it, which is the attack PKCE exists to close and why RFC 8252 requires it of ' +
+      'native apps.\n\n' +
+      'Making it a precondition rather than an option also removes a branch: the draft\'s rule that ' +
+      'a request_uri MUST NOT be returned without a code_challenge can no longer be reached, ' +
+      'because there is no such request. The engine still withholds the reference if it somehow ' +
+      'is, as a backstop rather than a path.',
     source: 'DRAFT',
   },
 ];
 
 export const KNOWN_GAPS = [
+  {
+    title: 'PKCE cannot be sent to /e/authorize',
+    severity: 'security',
+    spec:
+      'code_challenge and code_challenge_method are required on the initiate call, so an ' +
+      'authorization code is never issued to a flow that cannot prove possession of the verifier.',
+    actual:
+      'Not merely unenforced — the request schema REJECTS them. The initiate body is ' +
+      'additionalProperties: false and defines no PKCE parameters, so a client that tries to send ' +
+      'one gets 400 invalid_request, "data must NOT have additional properties". Omitting it is ' +
+      'accepted and the flow runs through to an authorization code. Both verified 2026-09-03 on ' +
+      'nelson.jp.auth0.com; `scope` on the same request is accepted, so it is these fields ' +
+      'specifically.',
+    impact:
+      'The endpoint serves public clients, which hold no secret. A code issued without a challenge ' +
+      'is redeemable by whoever intercepts it — on a native app, any other app registered for the ' +
+      'same redirect scheme. A client cannot opt into protecting itself.\n\n' +
+      'It also makes one draft rule unreachable in the other direction: "the authorization server ' +
+      'MUST NOT return a request_uri … if the client does not include a PKCE code_challenge in the ' +
+      'initial authorization challenge request." Since no client can include one, no redirect_to_web ' +
+      'response may ever legally carry a request_uri — which is the mechanism REDIR is built on. ' +
+      'Closing this needs a schema change before the federation work can ship.',
+    source: 'DRAFT',
+  },
+  {
+    title: 'The challenge is withdrawn once its own code is outstanding',
+    severity: 'usability',
+    spec:
+      'The challenge action stays in `next` beside verify:otp while a code is outstanding, so the ' +
+      'user can ask for another one. All 36 responses in the signup model that offer verify:otp ' +
+      're-offer the challenge next to it, and the Password RFD says the same for a connection with ' +
+      'more than one method. Recorded as a settled decision.',
+    actual:
+      'After action:challenge:email:v1 the tenant answers with verify:otp ALONE, even when the ' +
+      'client declared action:challenge:email:v1. Observed 2026-09-03 on nelson.jp.auth0.com.',
+    impact:
+      'A user whose code never arrives has no way forward but restarting the whole flow — there is ' +
+      'no resend, because the only action that could send another one is no longer in the ' +
+      'allow-list. The Password RFD lists OTP resend among its non-goals, so this is most likely ' +
+      'unbuilt rather than wrong; it is the single largest behavioural difference between spec ' +
+      'mode and the tenant today.',
+    source: 'PWD',
+  },
   {
     title: 'error_description carries machine codes, not developer prose',
     severity: 'spec-deviation',
@@ -1104,20 +1166,23 @@ export const KNOWN_GAPS = [
   },
   {
     title: 'Out-of-order action returns 500, not invalid_request',
-    severity: 'bug',
+    severity: 'resolved',
+    resolvedOn: '2026-09-03',
     spec:
       'D2 decision #3: `next` is both the response and the server-side allow-list the inbound ' +
       'action is validated against, so a client cannot skip challenge and jump to verify.',
     actual:
-      'Correctly refused — but with 500 server_error "An unexpected error occurred", not a 4xx. ' +
-      'Verified by calling verify:otp directly on a fresh session.',
+      'RESOLVED, re-verified 2026-09-03. The tenant now answers 400 invalid_request with ' +
+      '"The action is not permitted in the current state." It previously returned 500 server_error ' +
+      '"An unexpected error occurred", which is what this entry recorded on 2026-09-01. Kept rather ' +
+      'than deleted so a 500 reappearing reads as a regression against something that once worked, ' +
+      'not as a fresh discovery.\n\n' +
+      'One difference remains, and it is spec mode that is ahead: the tenant sends no auth_session ' +
+      'or next on that 400, so the console dead-ends, while spec mode restates both because nothing ' +
+      'was consumed.',
     impact:
-      'The allow-list holds, so this is not a security gap. But an SDK cannot tell "you called the ' +
-      'wrong action" from "the service is broken", and it pollutes error budgets.\n\n' +
-      'Spec mode does NOT reproduce this — it answers invalid_request and restates `next`, which ' +
-      'is the end state. A simulator of the finished protocol that taught a 500 as if it were the ' +
-      'design would be worse than useless to someone writing an SDK against it. The deviation is ' +
-      'recorded here instead.',
+      'While it lasted, an SDK could not tell "you called the wrong action" from "the service is ' +
+      'broken". Spec mode never reproduced it, and now the tenant agrees.',
     source: 'D2',
   },
   {

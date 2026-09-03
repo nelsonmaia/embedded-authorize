@@ -2,9 +2,10 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath, URL } from 'node:url';
 import { tenantProxy } from './scripts/vite-plugin-tenant-proxy.js';
+import { jiraIssues } from './scripts/vite-plugin-jira.js';
 
 export default defineConfig({
-  plugins: [react(), tenantProxy()],
+  plugins: [react(), tenantProxy(), jiraIssues()],
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },

@@ -11,12 +11,14 @@ import { ExchangeCard } from '@/components/ExchangeCard.jsx';
 import { BrowserLeg } from '@/components/BrowserLeg.jsx';
 import { NextBar } from '@/components/NextBar.jsx';
 import { TenantBar } from '@/components/TenantBar.jsx';
+import { JiraBar } from '@/components/JiraBar.jsx';
 import { FlowPicker } from '@/components/FlowPicker.jsx';
 import { cannedTransport } from '@/transports/cannedTransport.js';
 import { simulatorTransport, initiateSeed } from '@/transports/simulatorTransport.js';
 import { liveTransport } from '@/transports/liveTransport.js';
 import { flowById } from '@/data/flows.js';
 import { LIVE_CAPABILITIES } from '@/data/spec.js';
+import { useJira } from '@/hooks/useJira.js';
 
 const pretty = (o) => JSON.stringify(o, null, 2);
 
@@ -34,6 +36,9 @@ export function ConsoleView({ mode, flowId, variantId, onFlowChange, onVariantCh
   const [busy, setBusy] = useState(false);
   const [outOfOrder, setOutOfOrder] = useState(false);
   const [nonce, setNonce] = useState(0);
+  /* The Jira connection, only asked for in live mode — spec mode has no tenant to find a gap in.
+     Null until the dev server answers, which is why the button does not flicker between labels. */
+  const jira = useJira({ enabled: mode === 'live' });
 
   const transport = useRef(null);
   const seedRef = useRef(''); // the untouched suggestion, for "Reset payload"
@@ -49,7 +54,11 @@ export function ConsoleView({ mode, flowId, variantId, onFlowChange, onVariantCh
 
     if (mode === 'live') {
       t = liveTransport({ tenant, capabilities: LIVE_CAPABILITIES });
-      seed = { client_id: tenant.clientId || '', connection: tenant.connection || '', capabilities: [...LIVE_CAPABILITIES] };
+      seed = {
+        client_id: tenant.clientId || '',
+        connection: tenant.connection || '',
+        capabilities: [...LIVE_CAPABILITIES],
+      };
       if (tenant.audience) seed.audience = tenant.audience;
       if (tenant.scope) seed.scope = tenant.scope;
     } else if (flow?.kind === 'signup' && variant) {
@@ -158,7 +167,14 @@ export function ConsoleView({ mode, flowId, variantId, onFlowChange, onVariantCh
   return (
     <div className="mx-auto w-full max-w-5xl space-y-5 px-6 py-6">
       {mode === 'live' ? (
-        <TenantBar tenant={tenant} onChange={onTenantChange} />
+        <>
+          <TenantBar tenant={tenant} onChange={onTenantChange} />
+          {/* Where findings go. Sits under the tenant fields because it is the same kind of
+              setting: something you set once and then stop looking at. */}
+          <div className="rounded-lg border border-dashed px-4 py-3">
+            <JiraBar jira={jira} />
+          </div>
+        </>
       ) : (
         <FlowPicker
           flowId={flowId}
@@ -191,6 +207,7 @@ export function ConsoleView({ mode, flowId, variantId, onFlowChange, onVariantCh
                 result={s.result}
                 edited={s.edited}
                 domain={tenant?.domain}
+                jira={jira}
               />
               {/* The browser leg sits between the call that handed back an href and the one that
                   resumes — the only step in the transcript that is not a request. */}

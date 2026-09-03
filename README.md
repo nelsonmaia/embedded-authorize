@@ -18,10 +18,10 @@ npm run dev            # → http://localhost:5177
 | Script | What it does |
 |---|---|
 | `npm run dev` | Dev server on :5177, including the tenant proxy |
-| `npm test` | 112 assertions: data fidelity, the state machine, transports, proxy allowlist + log hygiene |
+| `npm test` | 172 assertions: data fidelity, the state machine, transports, proxy allowlist + log hygiene |
 | `npm run build` | Production bundle (end-state mode only — live needs the dev server) |
 | `npm run extract` | Regenerate `src/data/signupPrd.generated.json` from the committed source |
-| `node tests/e2e-browser.mjs` | 54 browser checks over CDP. Needs `npm run dev` running. |
+| `node tests/e2e-browser.mjs` | 66 browser checks over CDP. Needs `npm run dev` running. |
 
 ## Two modes, deliberately independent
 
@@ -36,7 +36,28 @@ content sets, both selected from the same dropdown:
   and an action outside `next[]` is really refused. Correct OTP is `123456`; correct password is
   `Abcd@1234`.
 
-**Live tenant** — what a real tenant does right now, including where it is not finished.
+**Live tenant** — what a real tenant does right now, including where it is not finished. Every
+response is checked against the contract and anything that differs is annotated beside it, under
+one of three headings: **off spec** (contradicts the draft or the documented contract), **known
+gap** (already recorded in `KNOWN_GAPS`), or **undocumented** (real behaviour the registry has no
+entry for — which may mean the registry is stale rather than the tenant wrong). The check never
+alters the response; live mode still shows exactly what came back.
+
+Each exchange carries its own verdict badge — *matches the spec*, *N known gaps*, *N off spec* —
+because a running total elsewhere on the page is not where you are looking when you read a response.
+
+**PKCE is mandatory in the end state.** `code_challenge` + `code_challenge_method: S256` are
+required on initiate; spec mode refuses the call without them. The endpoint serves public clients,
+which hold no secret, and it issues an authorization code — without a challenge that code is
+redeemable by whoever intercepts it. The tenant does not merely skip enforcement: its request
+schema is `additionalProperties: false` and defines no PKCE parameters, so sending one is a `400`.
+Live mode therefore omits it (a console that fails on its first click is useless) and reports the
+absence instead.
+
+Three things it catches that reading JSON side by side does not: an `auth_session` accepted after
+being spent (invisible in any single response, so the transport tracks it), a `next[]` descriptor
+carrying a field the registry does not declare, and a challenge action withdrawn while its own code
+is still outstanding — which leaves a user whose code never arrived with no way to ask for another.
 
 Neither mode falls back to the other. If a live call fails you see it fail, because a spec-shaped
 answer would mean you were no longer testing your tenant.
@@ -84,6 +105,55 @@ Guarantees, all covered by `tests/dev-proxy.test.js`:
 CORS for `/e/authorize` is planned (Delivery 3 RFD, reusing the `allow_origins` components
 EMBL-1317 shipped for discovery). Once it lands, the browser can call tenants directly and this
 middleware can go.
+
+## Raising a finding in Jira
+
+Every finding carries a button. Press **Connect to Jira** once, pick a project, and findings file
+themselves as issues authored by you.
+
+There is nothing to configure — no API token, no project id looked up in an admin screen, no
+environment variables. That is the point, and it took some finding.
+
+**Why MCP and not the REST API.** Filing an issue needs a credential; the only question is whose.
+An Atlassian API token is a *full account* credential that each person has to paste into a shell.
+Classic 3LO replaces it with a `client_secret`, and since there is no public-client or PKCE flow
+documented for it, that means one *shared* secret sitting next to the repo — worse than what it
+replaced, for a tool each developer runs locally. The Atlassian Remote MCP Server is the one path
+with neither, and every step of that was verified against the live endpoints:
+
+| | |
+|---|---|
+| `token_endpoint_auth_methods_supported` | includes `"none"` — public client, no secret |
+| `code_challenge_methods_supported` | `["S256"]` — PKCE, and only the strong method |
+| `registration_endpoint` | present — the dev server registers itself |
+| a `http://localhost/…` redirect URI | accepted — nothing to host |
+
+So the flow is authorization code + PKCE `S256` against a client registered on first use, which is
+the same shape this console argues for at `/e/authorize`. The token belongs to whoever consented,
+is scoped to `read:` / `write:jira:agent-interface` rather than their whole account, and is
+revocable from their own Atlassian account. Discovery is not hardcoded: an unauthenticated call
+answers `401` with a `WWW-Authenticate` naming the protected-resource metadata (RFC 9728), which
+names the authorization server, which describes its own endpoints.
+
+**Tokens are never written to disk.** They live in memory for the lifetime of the dev server; a
+refresh token in the working tree would be exactly the durable credential this design removes.
+Restarting `npm run dev` costs one click. Only the client registration is cached, under
+`node_modules/.cache/`, and a client id is not a secret.
+
+**The credential never reaches the browser.** `GET /__jira` reports whether a connection exists and
+who it belongs to, never the token. The middleware is `apply: 'serve'`, so a token-bearing endpoint
+cannot ship in a build. The one log line per call carries the tool and duration, never a header or
+a body. Tests assert all three, on the wire as well as in the source.
+
+The full ticket text always goes to the clipboard first, so a rejected call never loses what you
+were about to file. If Jira refuses the issue the button offers a prefilled create-issue page
+instead — which needs the numeric project id, because `CreateIssueDetails!init.jspa` will not
+resolve a project key.
+
+Argument names are not guessed at. Each call is fitted to the schema the server advertises through
+`tools/list`: unknown keys are dropped and a few known aliases tried in order, so a server-side
+rename surfaces as the tool's own error text rather than a silent failure.
+`GET /__jira/tools` shows what the tools actually accept.
 
 ## UI
 
@@ -139,6 +209,9 @@ Two things are **derived**, and flagged as such wherever they appear:
 | `src/transports/cannedTransport.js` | Replays the modelled signup pairs |
 | `src/transports/simulatorTransport.js` | Wraps `engine.js` for sign-in flows |
 | `src/transports/liveTransport.js` | Real HTTP via the dev middleware |
+| `src/data/conformance.js` | Checks a live response against the contract |
+| `src/data/jiraTicket.js` | One finding as a Jira issue, and as a prefilled URL |
+| `scripts/vite-plugin-jira.js` | The dev-only endpoint that files it |
 | `src/transports/types.js` | The one interface all three satisfy |
 | `src/data/spec.js` | The contract as data: the endpoint, 25 capabilities, errors, connection presets, decisions, known gaps |
 | `src/engine/engine.js` | The sign-in state machine: negotiation, `next` enforcement, session rotation, decoys |
@@ -167,7 +240,8 @@ transport does not re-mask an unedited payload.
 
 Deviations are recorded in `KNOWN_GAPS`. Two are things the tenant does that the spec does not:
 `auth_session` replay is not rejected (so `challenge:email` can be replayed to re-send OTPs), and an
-out-of-order action returns `500` rather than `invalid_request`. Two more come from the IETF draft:
+out-of-order action **used to** return `500` rather than `invalid_request` — re-verified
+2026-09-03, the tenant now answers `400 invalid_request`, so that one is closed. Two more come from the IETF draft:
 `auth_session` is not device-bound, and web-leg lifetimes never reach the client.
 
 **Spec mode shows the end state, not current behaviour.** It does not reproduce tenant bugs — a

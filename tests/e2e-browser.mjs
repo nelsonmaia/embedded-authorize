@@ -556,6 +556,87 @@ try {
   check('it downloads with a sensible filename and type', /\.md$/.test(md.filename || '') && /markdown/.test(md.type || ''), `${md.filename} · ${md.type}`);
   check('the export carries the tables and the action vocabulary', md.hasTables >= 4 && md.hasActions, JSON.stringify(md));
 
+  /* ── live mode annotates what differs from the spec ────────────────────── */
+
+  await cdp.clickReal(
+    `[...document.querySelectorAll('[role="tab"]')].find(t => /Live tenant/.test(t.textContent))`
+  );
+  const conformance = await cdp.eval(`
+    await __t.wait(400);
+    // The tenant is prefilled, so the console is usable straight away.
+    const ta = __t.ta();
+    if (!ta) return { why: 'live mode is still asking for tenant details' };
+
+    __t.btn('Send').click();
+    await __t.wait(2500);
+
+    const t = document.body.innerText;
+    const pres = [...document.querySelectorAll('pre')].map(p => p.textContent).join('\\n');
+    return {
+      reachedTenant: /insufficient_authorization|invalid_request|auth_session/.test(pres),
+      // The verdict is a badge on the exchange it judges, not a summary elsewhere on the page.
+      hasVerdict: /matches the spec|off spec|known gaps?|differences?/i.test(t),
+      noSummaryBox: !/Matches the contract/.test(t) && !/differences from the spec/.test(t),
+      // A recorded deviation must read as a known gap, not as a contract violation — the whole
+      // point of the severity split. The tenant cannot accept PKCE, so the first call always has
+      // one; if it ever reports "off spec" instead, the severities have collapsed.
+      knownGapNotViolation: /known gaps?/i.test(t) && !/off spec/i.test(t),
+      // And the finding shows the difference rather than describing it.
+      showsTheDifference: /Expected/i.test(t) && /Got/i.test(t),
+      // Every finding can be filed. With nothing configured it falls back to the clipboard, which
+      // is the label to expect from a bare checkout.
+      raiseButtons: [...document.querySelectorAll('button')]
+        .filter(b => /Raise in Jira|Copy as ticket/.test(b.textContent)).length,
+      findingRows: document.querySelectorAll('[data-finding]').length,
+    };
+  `);
+  check('live mode reaches the tenant', conformance.reachedTenant, conformance.why || JSON.stringify(conformance));
+  check('it states whether the response matches the spec', conformance.hasVerdict, JSON.stringify(conformance));
+  check('a recorded deviation reads as a known gap, not a violation', conformance.knownGapNotViolation, JSON.stringify(conformance));
+  check('a finding shows expected vs got, not just prose', conformance.showsTheDifference, JSON.stringify(conformance));
+  check(
+    'every finding can be raised as a ticket',
+    conformance.raiseButtons > 0 && conformance.raiseButtons === conformance.findingRows,
+    `${conformance.raiseButtons} buttons for ${conformance.findingRows} findings`
+  );
+  check('the verdict is on the exchange, not in a summary box', conformance.noSummaryBox, JSON.stringify(conformance));
+
+  /* ── connecting to Jira ───────────────────────────────────────────────── */
+
+  const jira = await cdp.eval(`
+    const t = document.body.innerText;
+    const connect = [...document.querySelectorAll('button')].find(b => /Connect to Jira/.test(b.textContent));
+    return {
+      // Nothing is configured in a bare checkout, so the offer must be to connect — not a dead
+      // button, and not a demand for a token that no longer exists anywhere in this app.
+      offersConnect: !!connect,
+      explainsTheFlow: /PKCE/.test(t) && /no API token|No API token/i.test(t),
+      // The old design needed six environment variables. If any name survives, something still
+      // reads them and the connect path is not actually the only one.
+      noEnvVarNames: !/JIRA_SITE|JIRA_TOKEN|JIRA_PROJECT|JIRA_EMAIL|JIRA_ISSUETYPE/.test(t),
+      // Pickers appear only once connected; offering an empty project list would be a dead end.
+      noPickersBeforeConnecting: !/Choose a project/.test(t),
+    };
+  `);
+  check('a bare checkout offers to connect, not to configure', jira.offersConnect, JSON.stringify(jira));
+  check('it says how the connection is authorized', jira.explainsTheFlow, JSON.stringify(jira));
+  check('no environment variable survives in the UI', jira.noEnvVarNames, JSON.stringify(jira));
+  check('no project picker before there is a connection', jira.noPickersBeforeConnecting, JSON.stringify(jira));
+
+  // The status endpoint is what the button reads. It must never carry a credential, whatever the
+  // connection state — this asserts on the wire, not on the source.
+  const status = await cdp.eval(`
+    const r = await fetch('/__jira').then(r => r.json());
+    const body = JSON.stringify(r);
+    return {
+      answers: typeof r.connected === 'boolean',
+      overMcp: r.transport === 'mcp',
+      noCredential: !/access_token|refresh_token|accessToken|refreshToken|Bearer|client_secret/i.test(body),
+    };
+  `);
+  check('the dev server reports the connection over MCP', status.answers && status.overMcp, JSON.stringify(status));
+  check('the status never carries a credential', status.noCredential, JSON.stringify(status));
+
   const realErrors = cdp.consoleErrors.filter((e) => !/favicon|React DevTools/i.test(e));
   check('no console errors', realErrors.length === 0, realErrors.join('\n    '));
 } catch (err) {
