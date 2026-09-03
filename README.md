@@ -18,8 +18,9 @@ npm run dev            # → http://localhost:5177
 | Script | What it does |
 |---|---|
 | `npm run dev` | Dev server on :5177, including the tenant proxy |
-| `npm test` | 172 assertions: data fidelity, the state machine, transports, proxy allowlist + log hygiene |
-| `npm run build` | Production bundle (end-state mode only — live needs the dev server) |
+| `npm test` | 190 assertions: data fidelity, the state machine, transports, proxy allowlist + log hygiene |
+| `npm run build` | Production bundle into `dist/` |
+| `npm start` | Serve the build plus the tenant proxy (see **Deploying**) |
 | `npm run extract` | Regenerate `src/data/signupPrd.generated.json` from the committed source |
 | `node tests/e2e-browser.mjs` | 66 browser checks over CDP. Needs `npm run dev` running. |
 
@@ -77,19 +78,21 @@ What an edit does depends on the mode, and that difference is the point:
 - **Sign in (simulated)** — edits have real consequences, because nothing is prerecorded.
 - **Live** — sent verbatim to your tenant. Nothing is second-guessed.
 
-## Live mode: why there is a dev-server middleware
+## Live mode: why there is a server-side proxy
 
 `POST /e/authorize` sends no CORS headers today — `OPTIONS` returns 404 and `POST` returns no
 `access-control-allow-origin` — so a browser cannot call it cross-origin. Postman has no such
 problem because it is not a browser: the request is made server-side.
-`scripts/vite-plugin-tenant-proxy.js` does the same thing from the Vite dev server.
+`scripts/tenant-proxy/forward.js` does the same thing server-side, and is shared verbatim by the
+Vite dev middleware and the deployed server so the two cannot drift.
 
 It is not `server.proxy`, which resolves its `target` at config load — the tenant domain is typed at
 runtime. It registers `POST /__tenant` and does its own `fetch`.
 
-`apply: 'serve'` means it is absent from any production build, so it cannot ship as an open proxy.
+The Vite binding is `apply: 'serve'`, so it is absent from any build. A deployment mounts the same
+handler itself, under a stricter allowlist — see **Deploying** below.
 
-Guarantees, all covered by `tests/dev-proxy.test.js`:
+Guarantees, all covered by `tests/dev-proxy.test.js` and `tests/server.test.js`:
 
 - Host allowlist: `.auth0.com`, `.auth0lab.com`, `.authok.cn`, plus exact-match additions via
   `PLAYGROUND_ALLOWED_HOSTS`. A URL smuggled through `domain` cannot redirect the request — the
@@ -101,6 +104,53 @@ Guarantees, all covered by `tests/dev-proxy.test.js`:
   carry OTPs and passwords; response bodies carry authorization codes and tokens. Redaction is a
   logging concern only — the authorization code still reaches the UI, which is the point.
 - Tenant config lives in `sessionStorage` and is gone when the tab closes.
+
+## Deploying
+
+The console needs a server, not a static host. Serving `dist/` as files alone leaves the app POSTing
+to `/__tenant` with nothing behind it, and a static host answers a POST to an unknown path with
+**405 Method Not Allowed** — an error about HTTP methods for what is really a missing backend.
+
+```
+npm run build
+PLAYGROUND_ALLOWED_HOSTS=your-tenant.auth0.com node server.js     # PORT, default 8080
+```
+
+or `docker build -t console . && docker run -p 8080:8080 -e PLAYGROUND_ALLOWED_HOSTS=… console`.
+
+**`PLAYGROUND_ALLOWED_HOSTS` is required, and the server forwards nothing without it.** That is
+deliberate. The dev proxy accepts any `*.auth0.com` host, which is safe on localhost where there is
+one of you; the same rule on a reachable host makes it a relay anyone can point at any tenant, from
+your server's address and under your server's reputation — credential-stuffing infrastructure with
+a friendly UI. So `server.js` runs `forward()` in strict mode, where the suffix defaults do not
+apply: exact tenant hosts, named by the operator, or nothing. It also rate limits per address
+(`TENANT_RATE_LIMIT`, default 60/minute), which the dev proxy has no need to.
+
+Everything else the proxy enforces is unchanged and shared: the path allowlist, GET/POST only, the
+`client_secret` refusal, and never logging a body.
+
+**Filing findings in Jira works in a deployment**, and needs nothing configured. Tokens are held per
+browser session rather than in module state, so each person connects as themselves — see
+`scripts/jira-mcp/sessions.js`. The session id is an `httpOnly` cookie, `Secure` whenever the
+request arrived over HTTPS, and `SameSite=Lax` because the OAuth callback is a top-level cross-site
+navigation back from Atlassian that `Strict` would break. Tokens stay in memory: a restart signs
+everyone out, which costs a click and leaves no credential to outlive the process.
+
+### Configuration
+
+Settings are read from the environment, and from a `.env` beside the server if there is one —
+loaded explicitly by both `server.js` and `vite.config.js`, because Vite reads `.env` only for
+`VITE_`-prefixed client values and never populates `process.env`, so an unloaded `.env` would fail
+silently on the dev server alone. Copy `.env.example` to `.env` to start; `.env` is gitignored.
+
+| | |
+|---|---|
+| `PLAYGROUND_ALLOWED_HOSTS` | Exact tenant hosts the proxy may reach, comma separated. **Required to deploy**; optional in dev. |
+| `TENANT_RATE_LIMIT` | Tenant calls per minute per address. Deployment only, default 60. |
+| `PORT` | For `node server.js`, default 8080. The dev server is always :5177. |
+
+Nothing in that list is a secret, and that is the point: the proxy adds no credentials of its own,
+and the Jira connection registers its own OAuth client and holds a per-browser token.
 
 CORS for `/e/authorize` is planned (Delivery 3 RFD, reusing the `allow_origins` components
 EMBL-1317 shipped for discovery). Once it lands, the browser can call tenants directly and this

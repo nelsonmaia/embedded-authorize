@@ -129,31 +129,34 @@ test('a real finding survives the whole path', () => {
 
 /* ── the credential stays out of the browser ────────────────────────────── */
 
-test('the middleware is dev-only', () => {
-  const src = readFileSync(new URL('../scripts/vite-plugin-jira.js', import.meta.url), 'utf8');
-  assert.match(src, /apply: 'serve'/, 'a token-bearing endpoint must not exist in a build');
-});
+const HANDLER = new URL('../scripts/jira-mcp/handler.js', import.meta.url);
+const SERVER_FILES = [
+  '../scripts/jira-mcp/handler.js',
+  '../scripts/jira-mcp/sessions.js',
+  '../scripts/jira-mcp/oauth.js',
+  '../scripts/jira-mcp/mcp.js',
+];
 
 test('the status endpoint reports the connection, never the token', () => {
-  const src = readFileSync(new URL('../scripts/vite-plugin-jira.js', import.meta.url), 'utf8');
+  const src = readFileSync(HANDLER, 'utf8');
   const status = src.slice(src.indexOf("if (route === '/' &&"), src.indexOf("if (route === '/connect'"));
 
-  assert.match(status, /connected: !!state\.tokens/, 'it says whether, not what');
+  assert.match(status, /connected: !!session\.tokens/, 'it says whether, not what');
   // `scope` is a list of permission names, not a credential; accessToken/refreshToken are.
   assert.ok(!/accessToken|refreshToken/.test(status), 'the status must not carry a token');
 });
 
 test('no token is ever written to disk', () => {
-  const src = readFileSync(new URL('../scripts/vite-plugin-jira.js', import.meta.url), 'utf8');
+  const src = readFileSync(HANDLER, 'utf8');
   const write = src.slice(src.indexOf('writeFileSync('), src.indexOf('writeFileSync(') + 200);
   // Only the client registration is cached. A refresh token on disk would be exactly the durable
   // credential this whole approach exists to remove.
   assert.match(write, /JSON\.stringify\(client/);
-  assert.ok(!/tokens/.test(write));
+  assert.ok(!/token/i.test(write));
 });
 
 test('nothing logs a credential', () => {
-  for (const file of ['../scripts/vite-plugin-jira.js', '../scripts/jira-mcp/oauth.js', '../scripts/jira-mcp/mcp.js']) {
+  for (const file of SERVER_FILES) {
     const src = readFileSync(new URL(file, import.meta.url), 'utf8');
     for (const line of src.split('\n')) {
       if (!line.includes('console.log')) continue;
@@ -167,8 +170,8 @@ test('nothing logs a credential', () => {
 
 test('the dev-server files do not import from src/', () => {
   // Same rule as the tenant proxy: they must stay standalone, or a refactor in src breaks the
-  // dev server in a way the app tests would not catch.
-  for (const file of ['../scripts/vite-plugin-jira.js', '../scripts/jira-mcp/oauth.js', '../scripts/jira-mcp/mcp.js']) {
+  // server in a way the app tests would not catch.
+  for (const file of [...SERVER_FILES, '../scripts/vite-plugin-jira.js']) {
     const src = readFileSync(new URL(file, import.meta.url), 'utf8');
     assert.ok(!/from '\.\.\/src|from '@\//.test(src), `${file} imports from src/`);
   }
