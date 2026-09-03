@@ -18,10 +18,10 @@ npm run dev            # → http://localhost:5177
 | Script | What it does |
 |---|---|
 | `npm run dev` | Dev server on :5177, including the tenant proxy |
-| `npm test` | 112 assertions: data fidelity, the state machine, transports, proxy allowlist + log hygiene |
+| `npm test` | 131 assertions: data fidelity, the state machine, transports, proxy allowlist + log hygiene |
 | `npm run build` | Production bundle (end-state mode only — live needs the dev server) |
 | `npm run extract` | Regenerate `src/data/signupPrd.generated.json` from the committed source |
-| `node tests/e2e-browser.mjs` | 54 browser checks over CDP. Needs `npm run dev` running. |
+| `node tests/e2e-browser.mjs` | 57 browser checks over CDP. Needs `npm run dev` running. |
 
 ## Two modes, deliberately independent
 
@@ -36,7 +36,16 @@ content sets, both selected from the same dropdown:
   and an action outside `next[]` is really refused. Correct OTP is `123456`; correct password is
   `Abcd@1234`.
 
-**Live tenant** — what a real tenant does right now, including where it is not finished.
+**Live tenant** — what a real tenant does right now, including where it is not finished. Every
+response is checked against the contract and anything that differs is annotated beside it, under
+one of three headings: **off spec** (contradicts the draft or the documented contract), **known
+gap** (already recorded in `KNOWN_GAPS`), or **undocumented** (real behaviour the registry has no
+entry for — which may mean the registry is stale rather than the tenant wrong). The check never
+alters the response; live mode still shows exactly what came back.
+
+Two things it catches that reading JSON side by side does not: an `auth_session` that is accepted
+after being spent — invisible in any single response, so the transport tracks it — and a `next[]`
+descriptor carrying a field the registry does not declare.
 
 Neither mode falls back to the other. If a live call fails you see it fail, because a spec-shaped
 answer would mean you were no longer testing your tenant.
@@ -139,6 +148,7 @@ Two things are **derived**, and flagged as such wherever they appear:
 | `src/transports/cannedTransport.js` | Replays the modelled signup pairs |
 | `src/transports/simulatorTransport.js` | Wraps `engine.js` for sign-in flows |
 | `src/transports/liveTransport.js` | Real HTTP via the dev middleware |
+| `src/data/conformance.js` | Checks a live response against the contract |
 | `src/transports/types.js` | The one interface all three satisfy |
 | `src/data/spec.js` | The contract as data: the endpoint, 25 capabilities, errors, connection presets, decisions, known gaps |
 | `src/engine/engine.js` | The sign-in state machine: negotiation, `next` enforcement, session rotation, decoys |
@@ -167,7 +177,8 @@ transport does not re-mask an unedited payload.
 
 Deviations are recorded in `KNOWN_GAPS`. Two are things the tenant does that the spec does not:
 `auth_session` replay is not rejected (so `challenge:email` can be replayed to re-send OTPs), and an
-out-of-order action returns `500` rather than `invalid_request`. Two more come from the IETF draft:
+out-of-order action **used to** return `500` rather than `invalid_request` — re-verified
+2026-09-03, the tenant now answers `400 invalid_request`, so that one is closed. Two more come from the IETF draft:
 `auth_session` is not device-bound, and web-leg lifetimes never reach the client.
 
 **Spec mode shows the end state, not current behaviour.** It does not reproduce tenant bugs — a

@@ -556,6 +556,33 @@ try {
   check('it downloads with a sensible filename and type', /\.md$/.test(md.filename || '') && /markdown/.test(md.type || ''), `${md.filename} · ${md.type}`);
   check('the export carries the tables and the action vocabulary', md.hasTables >= 4 && md.hasActions, JSON.stringify(md));
 
+  /* ── live mode annotates what differs from the spec ────────────────────── */
+
+  await cdp.clickReal(
+    `[...document.querySelectorAll('[role="tab"]')].find(t => /Live tenant/.test(t.textContent))`
+  );
+  const conformance = await cdp.eval(`
+    await __t.wait(400);
+    // The tenant is prefilled, so the console is usable straight away.
+    const ta = __t.ta();
+    if (!ta) return { why: 'live mode is still asking for tenant details' };
+
+    __t.btn('Send').click();
+    await __t.wait(2500);
+
+    const t = document.body.innerText;
+    const pres = [...document.querySelectorAll('pre')].map(p => p.textContent).join('\\n');
+    return {
+      reachedTenant: /insufficient_authorization|invalid_request|auth_session/.test(pres),
+      hasVerdict: /Matches the contract|differences? from the spec/.test(t),
+      // A clean first call must not be dressed up as a problem.
+      cleanCallIsClean: /Matches the contract/.test(t) || /known gap/i.test(t),
+    };
+  `);
+  check('live mode reaches the tenant', conformance.reachedTenant, conformance.why || JSON.stringify(conformance));
+  check('it states whether the response matches the spec', conformance.hasVerdict, JSON.stringify(conformance));
+  check('a conformant response is not flagged as a problem', conformance.cleanCallIsClean, JSON.stringify(conformance));
+
   const realErrors = cdp.consoleErrors.filter((e) => !/favicon|React DevTools/i.test(e));
   check('no console errors', realErrors.length === 0, realErrors.join('\n    '));
 } catch (err) {

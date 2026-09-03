@@ -6,7 +6,7 @@
  * the transcript of the whole flow.
  */
 import { useState } from 'react';
-import { Check, Copy, RotateCcw, Send } from 'lucide-react';
+import { AlertTriangle, Check, Copy, HelpCircle, RotateCcw, Send, XCircle } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { JsonEditor, JsonView } from './JsonCode.jsx';
@@ -27,6 +27,28 @@ function curlFor(domain, method, path, body) {
   const json = JSON.stringify(body, null, 2).replace(/'/g, "'\\''");
   return `curl -sS -X ${method} 'https://${host}${path}' \\\n  -H 'content-type: application/json' \\\n  -d '${json}'`;
 }
+
+/** Three severities, and the difference is what a reader should do about it. */
+const FINDING_TONE = {
+  violation: {
+    label: 'Off spec',
+    Icon: XCircle,
+    fg: 'text-destructive',
+    bg: 'bg-destructive/5',
+  },
+  gap: {
+    label: 'Known gap',
+    Icon: AlertTriangle,
+    fg: 'text-[hsl(var(--warn))]',
+    bg: 'bg-[hsl(var(--warn))]/5',
+  },
+  undocumented: {
+    label: 'Undocumented',
+    Icon: HelpCircle,
+    fg: 'text-muted-foreground',
+    bg: 'bg-muted/30',
+  },
+};
 
 function PaneHead({ children, className }) {
   return (
@@ -134,6 +156,35 @@ export function ExchangeCard({
           )}
         </div>
       </div>
+
+      {/* Live only: where this tenant's answer differs from the contract. Annotation beside the
+          response, never a change to it — the body above is exactly what came back. */}
+      {result?.findings?.length > 0 && (
+        <div className="border-t">
+          {result.findings.map((f, i) => {
+            const tone = FINDING_TONE[f.severity] ?? FINDING_TONE.undocumented;
+            const Icon = tone.Icon;
+            return (
+              <div
+                key={i}
+                className={cn('flex gap-2.5 border-b px-4 py-2.5 text-xs leading-relaxed last:border-b-0', tone.bg)}
+              >
+                <Icon className={cn('mt-px h-3.5 w-3.5 shrink-0', tone.fg)} />
+                <div className="min-w-0">
+                  <span className={cn('font-medium', tone.fg)}>{tone.label}</span>
+                  <span className="font-medium text-foreground"> — {f.title}</span>
+                  <p className="mt-0.5 text-muted-foreground">{f.detail}</p>
+                  {f.gap && (
+                    <p className="mt-0.5 text-muted-foreground/80">
+                      Recorded as a known gap: <span className="italic">{f.gap}</span>
+                    </p>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {result?.note && (
         <div className="whitespace-pre-line border-t bg-muted/30 px-4 py-2.5 text-xs leading-relaxed text-muted-foreground">

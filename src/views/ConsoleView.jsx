@@ -16,6 +16,7 @@ import { cannedTransport } from '@/transports/cannedTransport.js';
 import { simulatorTransport, initiateSeed } from '@/transports/simulatorTransport.js';
 import { liveTransport } from '@/transports/liveTransport.js';
 import { flowById } from '@/data/flows.js';
+import { summarise } from '@/data/conformance.js';
 import { LIVE_CAPABILITIES } from '@/data/spec.js';
 
 const pretty = (o) => JSON.stringify(o, null, 2);
@@ -168,6 +169,37 @@ export function ConsoleView({ mode, flowId, variantId, onFlowChange, onVariantCh
           onVariantChange={onVariantChange}
         />
       )}
+
+      {/* Live only: a running count, so a deviation twelve calls back is still visible. Spec mode
+          never has any — it IS the contract, so a checker over it would only ever agree. */}
+      {mode === 'live' && sent.length > 0 && (() => {
+        const all = sent.flatMap((s) => s.result?.findings ?? []);
+        const n = summarise(all);
+        if (!all.length) {
+          return (
+            <p className="rounded-lg border border-[hsl(var(--ok))]/30 bg-[hsl(var(--ok))]/5 px-4 py-2.5 text-sm text-muted-foreground">
+              <span className="font-medium text-[hsl(var(--ok))]">Matches the contract</span> — nothing
+              in {sent.length} {sent.length === 1 ? 'response' : 'responses'} differs from the spec.
+            </p>
+          );
+        }
+        return (
+          <p className="rounded-lg border border-[hsl(var(--warn))]/30 bg-[hsl(var(--warn))]/5 px-4 py-2.5 text-sm text-muted-foreground">
+            <span className="font-medium text-foreground">
+              {all.length} {all.length === 1 ? 'difference' : 'differences'} from the spec
+            </span>{' '}
+            across {sent.length} {sent.length === 1 ? 'response' : 'responses'} —{' '}
+            {[
+              n.violation && `${n.violation} off spec`,
+              n.gap && `${n.gap} known ${n.gap === 1 ? 'gap' : 'gaps'}`,
+              n.undocumented && `${n.undocumented} undocumented`,
+            ]
+              .filter(Boolean)
+              .join(', ')}
+            . Each is annotated on the response it came from.
+          </p>
+        );
+      })()}
 
       {/* What this flow is meant to show, and the rule it turns on. Both were already written on
           every scenario and neither reached the screen. */}

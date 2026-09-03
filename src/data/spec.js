@@ -159,7 +159,7 @@ export const CAPABILITIES = [
     status: 'live',
     source: 'D2',
     request: [{ name: 'email', example: 'hazel.nutt@okta.com', required: true }],
-    emits: [],
+    emits: [{ name: 'optional', value: 'true when the step may be skipped' }],
     doc:
       'Resolves whether the user exists, via auth0-users, and seals the result into the session ' +
       '(user_id + identifiers, or decoy:true). Returns the SAME `next` either way — this is the ' +
@@ -172,7 +172,7 @@ export const CAPABILITIES = [
     status: 'negotiated',
     source: 'PWD',
     request: [{ name: 'phone_number', example: '+15551234567', required: true }],
-    emits: [],
+    emits: [{ name: 'optional', value: 'true when the step may be skipped' }],
     doc:
       'The capability negotiates and appears in `next`, but no handler is registered — it ' +
       'resolves to 501 not_implemented. Called out explicitly as a pre-existing gap in the ' +
@@ -203,7 +203,7 @@ export const CAPABILITIES = [
     source: 'D2',
     request: [],
     emits: [
-      { name: 'channel', value: 'email' },
+      { name: 'index', value: '0' },
       { name: 'identifier', value: '<masked>' },
     ],
     doc:
@@ -358,7 +358,10 @@ export const CAPABILITIES = [
     status: 'spec',
     source: 'SIGNUP',
     request: [{ name: 'password', example: 'Abcd@1234', required: true, secret: true }],
-    emits: [],
+    emits: [
+      { name: 'complexity', value: 'the connection password policy' },
+      { name: 'optional', value: 'true when the step may be skipped' },
+    ],
     doc: 'Sets the password during signup, after the identifier has been verified.',
   },
   {
@@ -671,6 +674,14 @@ export const ERRORS = {
       'invalid_session for exactly that, so this is a deviation. D3 also returns this when the ' +
       'body client_id does not match the one sealed in the session — deliberately the generic ' +
       'message, so it never confirms the session otherwise decrypted fine.',
+  },
+  not_implemented: {
+    http: 501,
+    kind: 'gap',
+    doc:
+      'The action negotiated, was advertised in `next`, and then had no handler behind it. A ' +
+      'client that trusts `next` — which is the contract — cannot avoid this, so it is a gap in ' +
+      'the server rather than a mistake by the caller. Reached today by identify:phone.',
   },
   server_error: {
     http: 500,
@@ -1104,20 +1115,23 @@ export const KNOWN_GAPS = [
   },
   {
     title: 'Out-of-order action returns 500, not invalid_request',
-    severity: 'bug',
+    severity: 'resolved',
+    resolvedOn: '2026-09-03',
     spec:
       'D2 decision #3: `next` is both the response and the server-side allow-list the inbound ' +
       'action is validated against, so a client cannot skip challenge and jump to verify.',
     actual:
-      'Correctly refused — but with 500 server_error "An unexpected error occurred", not a 4xx. ' +
-      'Verified by calling verify:otp directly on a fresh session.',
+      'RESOLVED, re-verified 2026-09-03. The tenant now answers 400 invalid_request with ' +
+      '"The action is not permitted in the current state." It previously returned 500 server_error ' +
+      '"An unexpected error occurred", which is what this entry recorded on 2026-09-01. Kept rather ' +
+      'than deleted so a 500 reappearing reads as a regression against something that once worked, ' +
+      'not as a fresh discovery.\n\n' +
+      'One difference remains, and it is spec mode that is ahead: the tenant sends no auth_session ' +
+      'or next on that 400, so the console dead-ends, while spec mode restates both because nothing ' +
+      'was consumed.',
     impact:
-      'The allow-list holds, so this is not a security gap. But an SDK cannot tell "you called the ' +
-      'wrong action" from "the service is broken", and it pollutes error budgets.\n\n' +
-      'Spec mode does NOT reproduce this — it answers invalid_request and restates `next`, which ' +
-      'is the end state. A simulator of the finished protocol that taught a 500 as if it were the ' +
-      'design would be worse than useless to someone writing an SDK against it. The deviation is ' +
-      'recorded here instead.',
+      'While it lasted, an SDK could not tell "you called the wrong action" from "the service is ' +
+      'broken". Spec mode never reproduced it, and now the tenant agrees.',
     source: 'D2',
   },
   {

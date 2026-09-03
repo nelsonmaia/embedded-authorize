@@ -5,10 +5,13 @@
  * a browser doesn't: the request is made server-side, so `POST /e/authorize`'s missing CORS
  * headers are irrelevant. See scripts/vite-plugin-tenant-proxy.js.
  *
- * This transport never consults the spec. If a call fails, it reports the failure — it does not
- * substitute a documented response, because then you would not be testing your tenant.
+ * This transport never consults the spec to BUILD a response. If a call fails, it reports the
+ * failure — it does not substitute a documented one, because then you would not be testing your
+ * tenant. It does compare the answer against the contract afterwards and attach what differs;
+ * that is annotation beside the response, never a change to it.
  */
 import { byId } from '../data/spec.js';
+import { checkResponse, wasAccepted } from '../data/conformance.js';
 
 const SECRETS = ['password', 'recovery_code'];
 
@@ -20,6 +23,9 @@ function forDisplay(body) {
 
 export function liveTransport({ tenant, capabilities }) {
   let authSession = null;
+  /* Sessions this client has already spent on a successful call. Replay is invisible in any one
+     response, so it is tracked here and handed to the checker. */
+  const spent = new Set();
 
   async function call(path, body) {
     const res = await fetch('/__tenant', {
@@ -39,20 +45,25 @@ export function liveTransport({ tenant, capabilities }) {
         error: `${env.error}${env.detail ? ` — ${env.detail}` : ''}`,
       };
     }
+    const replayed = !!sent.auth_session && spent.has(sent.auth_session);
+    if (sent.auth_session && wasAccepted(env.status, env.body)) spent.add(sent.auth_session);
     if (env.body?.auth_session) authSession = env.body.auth_session;
+
+    const exchange = {
+      context: { sessionAlreadyUsed: replayed },
+      // The UNREDACTED body is what the checker sees: it needs to know whether a code_challenge
+      // was sent, and redaction only exists so the screen does not echo a password back.
+      request: { method: 'POST', path, body: sent },
+      status: env.status,
+      body: env.body,
+    };
+
     return {
       request: { method: 'POST', path, body: forDisplay(sent) },
       status: env.status,
       body: env.body,
       durationMs: env.durationMs,
-      gap:
-        env.status >= 500
-          ? 'Out-of-order action returns 500, not invalid_request'
-          : undefined,
-      note:
-        env.status >= 500
-          ? 'A 5xx here usually means the action was not in the previous `next[]`. The spec calls for invalid_request; the tenant returns 500. That is a known gap.'
-          : undefined,
+      findings: path === '/e/authorize' ? checkResponse(exchange) : [],
     };
   };
 
@@ -118,6 +129,7 @@ export function liveTransport({ tenant, capabilities }) {
 
     reset() {
       authSession = null;
+      spent.clear();
     },
   };
 }
