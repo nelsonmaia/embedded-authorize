@@ -18,7 +18,7 @@ npm run dev            # → http://localhost:5177
 | Script | What it does |
 |---|---|
 | `npm run dev` | Dev server on :5177, including the tenant proxy |
-| `npm test` | 192 assertions: data fidelity, the state machine, transports, proxy allowlist + log hygiene |
+| `npm test` | 194 assertions: data fidelity, the state machine, transports, proxy allowlist + log hygiene |
 | `npm run build` | Production bundle into `dist/` |
 | `npm start` | Serve the build plus the tenant proxy (see **Deploying**) |
 | `npm run extract` | Regenerate `src/data/signupPrd.generated.json` from the committed source |
@@ -110,6 +110,12 @@ Guarantees, all covered by `tests/dev-proxy.test.js` and `tests/server.test.js`:
 The console needs a server, not a static host. Serving `dist/` as files alone leaves the app POSTing
 to `/__tenant` with nothing behind it, and a static host answers a POST to an unknown path with
 **405 Method Not Allowed** — an error about HTTP methods for what is really a missing backend.
+
+`curl https://<host>/__health` settles which you have. It answers `{"server":"embedded-authorize",…}`
+only from `server.js`; a static host answers it with the app's own HTML and a `200`. Live mode
+checks this itself and says so in a banner rather than waiting for you to press Send, and
+distinguishes *no server at all* from *a server behind a proxy that is not forwarding `/__tenant`*,
+because those need opposite fixes.
 
 ```
 npm run build

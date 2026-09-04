@@ -19,6 +19,7 @@ import { liveTransport } from '@/transports/liveTransport.js';
 import { flowById } from '@/data/flows.js';
 import { LIVE_CAPABILITIES } from '@/data/spec.js';
 import { useJira } from '@/hooks/useJira.js';
+import { probeServer } from '@/data/serverProbe.js';
 
 const pretty = (o) => JSON.stringify(o, null, 2);
 
@@ -39,6 +40,17 @@ export function ConsoleView({ mode, flowId, variantId, onFlowChange, onVariantCh
   /* The Jira connection, only asked for in live mode — spec mode has no tenant to find a gap in.
      Null until the dev server answers, which is why the button does not flicker between labels. */
   const jira = useJira({ enabled: mode === 'live' });
+
+  /* Whether a server is behind this page at all. Asked on entering live mode rather than after a
+     failed Send, because "why did nothing happen" is a worse first experience than being told the
+     one thing that has to be true before anything can work. */
+  const [server, setServer] = useState(null);
+  useEffect(() => {
+    if (mode !== 'live') return setServer(null);
+    let alive = true;
+    probeServer().then((p) => alive && setServer(p));
+    return () => { alive = false; };
+  }, [mode]);
 
   const transport = useRef(null);
   const seedRef = useRef(''); // the untouched suggestion, for "Reset payload"
@@ -168,6 +180,32 @@ export function ConsoleView({ mode, flowId, variantId, onFlowChange, onVariantCh
     <div className="mx-auto w-full max-w-5xl space-y-5 px-6 py-6">
       {mode === 'live' ? (
         <>
+          {server && !server.running && (
+            <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm leading-relaxed">
+              <p className="font-medium text-destructive">This page is being served as files, not by its server.</p>
+              <p className="mt-1 text-muted-foreground">
+                Live mode needs one: <code className="font-mono text-xs">POST /e/authorize</code> sends
+                no CORS headers, so the call has to be made server-side.{' '}
+                {server.servedBy === 'static' ? (
+                  <>
+                    <code className="font-mono text-xs">/__health</code> came back as this page's own
+                    HTML rather than JSON — the signature of a static host answering everything from{' '}
+                    <code className="font-mono text-xs">index.html</code>. The same host will refuse{' '}
+                    <code className="font-mono text-xs">POST /__tenant</code> with a 405.
+                  </>
+                ) : (
+                  <>
+                    Nothing answered <code className="font-mono text-xs">/__health</code>
+                    {server.status ? ` (HTTP ${server.status})` : ''}, so{' '}
+                    <code className="font-mono text-xs">/__tenant</code> has nothing behind it either.
+                  </>
+                )}{' '}
+                Run <code className="font-mono text-xs">npm run dev</code>, or deploy with{' '}
+                <code className="font-mono text-xs">node server.js</code> rather than serving{' '}
+                <code className="font-mono text-xs">dist/</code> as files.
+              </p>
+            </div>
+          )}
           <TenantBar tenant={tenant} onChange={onTenantChange} />
           {/* Where findings go. Sits under the tenant fields because it is the same kind of
               setting: something you set once and then stop looking at. */}

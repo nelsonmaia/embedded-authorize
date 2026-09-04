@@ -12,6 +12,7 @@
  */
 import { byId } from '../data/spec.js';
 import { checkResponse, wasAccepted } from '../data/conformance.js';
+import { explainMissingProxy, probeServer } from '../data/serverProbe.js';
 
 const SECRETS = ['password', 'recovery_code'];
 
@@ -45,19 +46,24 @@ export function liveTransport({ tenant, capabilities }) {
     /* The proxy answers JSON whatever happens, so anything else means we did not reach it. A
        static host serving a built app answers a POST to an unknown path with 405 and an HTML
        error page; parsing that as JSON reports a syntax error, which describes the symptom and
-       hides the cause. */
+       hides the cause.
+
+       Which cause it is decides the fix, so ask: /__health is a route nothing static can fake. */
     try {
       return await res.json();
     } catch {
-      return {
-        ok: false,
-        error: 'no_proxy',
-        detail:
-          `The tenant proxy did not answer (HTTP ${res.status}). Live mode needs a server to make ` +
-          'the call, because POST /e/authorize sends no CORS headers and a browser cannot reach ' +
-          'it directly. Run `npm run dev`, or deploy with `node server.js` rather than as static ' +
-          'files.',
-      };
+      const probe = await probeServer();
+      const detail = explainMissingProxy(probe, res.status);
+
+      // The browser console is where someone looks first when a deployed page misbehaves, and it
+      // had nothing to say about this. Now it names the route, the verdict and the fix.
+      // eslint-disable-next-line no-console
+      console.error(
+        `[embedded-authorize] POST /__tenant → ${res.status}, and no server answered /__health.\n` +
+          `${detail}\nProbe: ${JSON.stringify(probe)}`
+      );
+
+      return { ok: false, error: 'no_proxy', detail };
     }
   }
 

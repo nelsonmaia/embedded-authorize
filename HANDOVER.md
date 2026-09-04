@@ -6,7 +6,7 @@ reading the code.
 
 ## Where it stands
 
-Everything builds and passes: **192 unit assertions** (`npm test`), **66 browser checks**
+Everything builds and passes: **194 unit assertions** (`npm test`), **66 browser checks**
 (`node tests/e2e-browser.mjs`, needs `npm run dev` running), clean `npm run build`.
 
 Recent work, oldest first:
@@ -30,12 +30,25 @@ production server, which is the fastest way to check either of them again.
 `embedded-authorize.a0-b2c-core.platform.atko.ai`. It looks like an HTTP-method problem or a CORS
 problem and is neither.
 
+The access log settles it. `GET /__jira` returning **304** is impossible from `server.js`: that
+handler sets `cache-control: no-store` and has no ETag. A 304 means nginx's SPA fallback served
+`index.html` for it — so nginx is answering every path itself and Node is not in the picture.
+
 **Cause.** `/__tenant` needs a server. A static file host answers a POST to a path it has no file
 for with 405. The built bundle still *calls* `/__tenant` — only the handler is absent.
+
+**How to confirm in one request.** `curl https://<host>/__health`. It answers
+`{"server":"embedded-authorize",…}` only from `server.js`. A static host answers it with the app's
+own HTML and a `200`, which is the giveaway — the console now says exactly this in a banner the
+moment you open live mode, and in the browser console, so nobody has to read an access log again.
 
 **Fix.** Make the platform run `node server.js` rather than serve `dist/`. The `Dockerfile` already
 does this correctly if the platform builds from one. `PLAYGROUND_ALLOWED_HOSTS` must be set or the
 proxy forwards nothing by design.
+
+If `/__health` *does* answer but `/__tenant` still 405s, the cause is the other one: a proxy in
+front is handling that path itself. It must forward `/__tenant`, `/__jira` and `/__health` through.
+The console distinguishes these two and gives different advice for each.
 
 **Proof it is only deployment.** The same build behind `node server.js` + ngrok reached the real
 tenant and rendered a genuine `403 insufficient_authorization` with `auth_session` and `next[]`.

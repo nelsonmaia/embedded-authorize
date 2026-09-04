@@ -17,6 +17,7 @@ import { once } from 'node:events';
 
 import { forward, hostOf } from '../scripts/tenant-proxy/forward.js';
 import { createConsoleServer } from '../server.js';
+import { explainMissingProxy } from '../src/data/serverProbe.js';
 
 function fakeRes() {
   return {
@@ -217,4 +218,37 @@ test('a write to anything but the proxy is refused', async () => {
     const res = await fetch(`${base}/index.html`, { method: 'POST' });
     assert.equal(res.status, 405);
   });
+});
+
+/* ── telling one failure from the other ─────────────────────────────────── */
+
+test('/__health identifies this server, and nothing static can fake it', async () => {
+  await withServer(async (base) => {
+    const res = await fetch(`${base}/__health`);
+    const body = await res.json();
+
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type'), /application\/json/);
+    // The name is the check. A static host answers /__health with index.html and a 200, so a
+    // status code alone proves nothing.
+    assert.equal(body.server, 'embedded-authorize');
+    assert.ok(body.routes.includes('/__tenant'));
+    assert.equal(res.headers.get('cache-control'), 'no-store', 'a cached health check answers for the past');
+  });
+});
+
+test('the two ways live mode can fail get different advice', () => {
+  // Both surface as "POST /__tenant returned 405", and they need opposite fixes: one is a missing
+  // process, the other a misrouted path in front of a running one. Conflating them sent a real
+  // deployment to its CORS settings, which were never involved.
+  const noServer = explainMissingProxy({ running: false, servedBy: 'static', status: 200 }, 405);
+  assert.match(noServer, /served as static files/);
+  assert.match(noServer, /node server\.js/, 'it must say what to run');
+  assert.ok(!/HTTP 200/.test(noServer), 'reporting the 200 from index.html reads as success');
+  assert.match(noServer, /HTML instead of JSON/, 'name the evidence, not the status code');
+
+  const misrouted = explainMissingProxy({ running: true, server: 'embedded-authorize' }, 405);
+  assert.match(misrouted, /server is running/);
+  assert.match(misrouted, /nginx|ingress/, 'it must point at what sits in front');
+  assert.ok(!/npm run dev/.test(misrouted), 'starting a server is not the fix when one is running');
 });

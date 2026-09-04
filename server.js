@@ -150,6 +150,24 @@ export const createConsoleServer = () =>
       });
     }
 
+    /* Is this server actually answering? The question sounds trivial and is not: a static host in
+       front of the build answers GET / with the app and POST /__tenant with 405, which reads as an
+       HTTP-method problem rather than a missing backend. Nothing static can produce this reply, so
+       one request settles it — for the console, and for a human with curl. */
+    if (pathname === '/__health') {
+      return send(res, 200, {
+        ok: true,
+        server: 'embedded-authorize',
+        routes: ['/__tenant', '/__jira', '/__health'],
+        tenantsAllowed: (process.env.PLAYGROUND_ALLOWED_HOSTS || '')
+          .split(',')
+          .map((h) => h.trim())
+          .filter(Boolean).length,
+        node: process.version,
+        uptimeSeconds: Math.round(process.uptime()),
+      });
+    }
+
     if (pathname === '/__jira' || pathname.startsWith('/__jira/')) {
       // The handler expects a URL relative to its mount point, as the Vite middleware gives it.
       req.url = req.url.slice('/__jira'.length) || '/';
