@@ -13,6 +13,7 @@
 import { byId } from '../data/spec.js';
 import { checkResponse, wasAccepted } from '../data/conformance.js';
 import { explainMissingProxy, probeServer } from '../data/serverProbe.js';
+import { TENANT } from '../data/endpoints.js';
 
 const SECRETS = ['password', 'recovery_code'];
 
@@ -34,7 +35,7 @@ export function liveTransport({ tenant, capabilities }) {
   async function call(path, body) {
     let res;
     try {
-      res = await fetch('/__tenant', {
+      res = await fetch(TENANT(), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ domain: tenant.domain.trim(), path, method: 'POST', body }),

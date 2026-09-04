@@ -252,3 +252,52 @@ test('the two ways live mode can fail get different advice', () => {
   assert.match(misrouted, /nginx|ingress/, 'it must point at what sits in front');
   assert.ok(!/npm run dev/.test(misrouted), 'starting a server is not the fix when one is running');
 });
+
+/* ── mounted under a path, not at a domain root ─────────────────────────── */
+
+const MOUNT = '/a0-b2c-core/apps/v1/embedded-authorize';
+
+test('the API routes answer whether or not they arrive wearing a mount prefix', async () => {
+  // A platform may serve the console under a path and proxy through with the prefix intact. An
+  // unmatched /__tenant does not 404 — it falls through to the SPA and returns index.html, which
+  // the console then reports as "no server" while looking straight at one.
+  await withServer(async (base) => {
+    for (const prefix of ['', MOUNT, '/some/other/mount']) {
+      const health = await fetch(`${base}${prefix}/__health`);
+      assert.equal(health.status, 200, `${prefix || '(root)'} /__health`);
+      assert.equal((await health.json()).server, 'embedded-authorize');
+
+      const tenant = await fetch(`${base}${prefix}/__tenant`);
+      assert.equal(tenant.status, 405, `${prefix || '(root)'} /__tenant should be the proxy, not the SPA`);
+      assert.match(tenant.headers.get('content-type'), /application\/json/);
+
+      const jira = await fetch(`${base}${prefix}/__jira`);
+      assert.equal((await jira.json()).transport, 'mcp', `${prefix || '(root)'} /__jira`);
+    }
+  });
+});
+
+test('a path that merely starts like a route is not one', async () => {
+  await withServer(async (base) => {
+    // /__tenantfoo shares a prefix with /__tenant and is not it; it must reach the SPA instead.
+    const res = await fetch(`${base}/__tenantfoo`);
+    const type = res.headers.get('content-type') ?? '';
+    assert.ok(!type.includes('application/json') || res.status !== 405, '/__tenantfoo was treated as the proxy');
+  });
+});
+
+test('assets resolve under a mount prefix', async () => {
+  await withServer(async (base) => {
+    const index = await fetch(`${base}/`);
+    if (index.status !== 200) return; // no build present; the SPA test already covers that
+    const html = await index.text();
+
+    const asset = (html.match(/(?:\.\/|\/)?assets\/[A-Za-z0-9._-]+\.js/) ?? [])[0];
+    if (!asset) return;
+    const clean = asset.replace(/^\.?\//, '');
+
+    const res = await fetch(`${base}${MOUNT}/${clean}`);
+    assert.equal(res.status, 200, `${MOUNT}/${clean}`);
+    assert.match(res.headers.get('content-type'), /javascript/, 'a prefixed asset must not fall back to index.html');
+  });
+});

@@ -37,6 +37,46 @@ try {
 const ROOT = resolve(fileURLToPath(new URL('./dist', import.meta.url)));
 const PORT = Number(process.env.PORT || 8080);
 
+/* Where this app is mounted, if it is not at a domain root. A platform may serve it under a path
+   and proxy through with the prefix intact, in which case every route arrives wearing it. The
+   platform we deploy to injects PUBLIC_URL for exactly this. */
+const BASE_PATH = `/${(process.env.BASE_PATH || process.env.PUBLIC_URL || process.env.NEXT_PUBLIC_BASE_PATH || '').trim()}`
+  .replace(/\/+/g, '/')
+  .replace(/\/$/, '');
+
+/** The API routes, matched wherever in the path they appear. */
+const API_ROUTES = ['/__tenant', '/__health', '/__jira'];
+
+/**
+ * Split a request path into "which of our routes is this" and "what came after".
+ *
+ * Matched by position rather than by stripping a configured prefix, so the server works whether or
+ * not the platform tells it where it is mounted. Getting this wrong is invisible: an unmatched
+ * /__tenant falls through to the SPA and returns index.html, which the console then reports as
+ * "no server", having asked a server that was right there.
+ */
+function apiRoute(pathname) {
+  for (const name of API_ROUTES) {
+    const at = pathname.indexOf(name);
+    if (at === -1) continue;
+    const rest = pathname.slice(at + name.length);
+    // Only an exact match or a subpath — never a route that merely starts with the same letters.
+    if (rest === '' || rest.startsWith('/')) return { name, rest: rest || '/' };
+  }
+  return null;
+}
+
+/** Strip the mount prefix from a static request, so /<base>/assets/x.js finds dist/assets/x.js. */
+function localFilePath(pathname) {
+  if (BASE_PATH.length > 1 && pathname.startsWith(BASE_PATH)) {
+    return pathname.slice(BASE_PATH.length) || '/';
+  }
+  // Not configured: Vite fingerprints everything under /assets/, so that segment is a reliable
+  // anchor when a prefix is present but unannounced.
+  const assets = pathname.indexOf('/assets/');
+  return assets > 0 ? pathname.slice(assets) : pathname;
+}
+
 /* Rate limit. The dev proxy needs none: it is bound to localhost and there is one of you. A
    deployed one is a public door to a set of tenants, and a flat cap per address is the difference
    between a testing console and something an attacker can drive. */
@@ -112,8 +152,10 @@ export const createConsoleServer = () =>
   createServer(async (req, res) => {
   const { pathname } = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
 
+  const api = apiRoute(pathname);
+
   try {
-    if (pathname === '/__tenant') {
+    if (api?.name === '/__tenant') {
       if (req.method === 'OPTIONS') {
         res.statusCode = 204;
         return res.end();
@@ -154,7 +196,7 @@ export const createConsoleServer = () =>
        front of the build answers GET / with the app and POST /__tenant with 405, which reads as an
        HTTP-method problem rather than a missing backend. Nothing static can produce this reply, so
        one request settles it — for the console, and for a human with curl. */
-    if (pathname === '/__health') {
+    if (api?.name === '/__health') {
       return send(res, 200, {
         ok: true,
         server: 'embedded-authorize',
@@ -168,9 +210,9 @@ export const createConsoleServer = () =>
       });
     }
 
-    if (pathname === '/__jira' || pathname.startsWith('/__jira/')) {
+    if (api?.name === '/__jira') {
       // The handler expects a URL relative to its mount point, as the Vite middleware gives it.
-      req.url = req.url.slice('/__jira'.length) || '/';
+      req.url = api.rest + (req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '');
       if (await handleJira(req, res)) return;
       return send(res, 404, { ok: false, error: 'unknown_route' });
     }
@@ -178,7 +220,7 @@ export const createConsoleServer = () =>
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       return send(res, 405, { ok: false, error: 'method_not_allowed' });
     }
-    return await serveStatic(req, res, pathname);
+    return await serveStatic(req, res, localFilePath(pathname));
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error(`  server  ${req.method} ${pathname} → ${err.message}`);

@@ -10,6 +10,7 @@
  * remembered them would have to decide whose they were.
  */
 import { useCallback, useEffect, useState } from 'react';
+import { JIRA } from '@/data/endpoints.js';
 
 const SELECTION_KEY = 'embedded-authorize:jira-selection';
 
@@ -45,7 +46,7 @@ export function useJira({ enabled = true } = {}) {
 
   const refresh = useCallback(() => {
     if (!enabled) return;
-    getJson('/__jira')
+    getJson(JIRA())
       .then(setStatus)
       .catch(() => setStatus({ connected: false, unavailable: true })); // no dev server, or no plugin
   }, [enabled]);
@@ -59,7 +60,7 @@ export function useJira({ enabled = true } = {}) {
   useEffect(() => {
     if (!status?.connected) return setSites([]);
     let alive = true;
-    getJson('/__jira/sites')
+    getJson(JIRA('/sites'))
       .then((r) => alive && (r.ok ? setSites(r.sites) : setError(r.detail)))
       .catch((e) => alive && setError(e.message));
     return () => { alive = false; };
@@ -75,7 +76,7 @@ export function useJira({ enabled = true } = {}) {
   useEffect(() => {
     if (!status?.connected || !selection.cloudId) return setProjects([]);
     let alive = true;
-    getJson(`/__jira/projects?cloudId=${encodeURIComponent(selection.cloudId)}`)
+    getJson(JIRA(`/projects?cloudId=${encodeURIComponent(selection.cloudId)}`))
       .then((r) => alive && (r.ok ? setProjects(r.projects) : setError(r.detail)))
       .catch((e) => alive && setError(e.message));
     return () => { alive = false; };
@@ -85,7 +86,7 @@ export function useJira({ enabled = true } = {}) {
     if (!status?.connected || !selection.cloudId || !selection.projectKey) return setIssueTypes([]);
     let alive = true;
     const q = `cloudId=${encodeURIComponent(selection.cloudId)}&projectKey=${encodeURIComponent(selection.projectKey)}`;
-    getJson(`/__jira/issuetypes?${q}`)
+    getJson(JIRA(`/issuetypes?${q}`))
       .then((r) => alive && (r.ok ? setIssueTypes(r.issueTypes) : setError(r.detail)))
       .catch((e) => alive && setError(e.message));
     return () => { alive = false; };
@@ -99,7 +100,7 @@ export function useJira({ enabled = true } = {}) {
   }, [issueTypes, selection.issueTypeName, setSelection]);
 
   const disconnect = useCallback(async () => {
-    await fetch('/__jira/disconnect', { method: 'POST' }).catch(() => {});
+    await fetch(JIRA('/disconnect'), { method: 'POST' }).catch(() => {});
     setSelectionState({ ...EMPTY });
     try { sessionStorage.removeItem(SELECTION_KEY); } catch { /* ignore */ }
     refresh();
@@ -107,7 +108,7 @@ export function useJira({ enabled = true } = {}) {
 
   const file = useCallback(
     (ticket) =>
-      fetch('/__jira/issue', {
+      fetch(JIRA('/issue'), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ ...ticket, ...selection }),

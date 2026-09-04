@@ -1,3 +1,5 @@
+import { HEALTH } from './endpoints.js';
+
 /**
  * Is a server answering, or is this build being served as files?
  *
@@ -15,7 +17,7 @@
 export async function probeServer() {
   let res;
   try {
-    res = await fetch('/__health', { headers: { accept: 'application/json' } });
+    res = await fetch(HEALTH(), { headers: { accept: 'application/json' } });
   } catch (e) {
     return { running: false, servedBy: 'unreachable', detail: e.message };
   }

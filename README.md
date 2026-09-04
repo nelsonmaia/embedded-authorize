@@ -18,7 +18,7 @@ npm run dev            # → http://localhost:5177
 | Script | What it does |
 |---|---|
 | `npm run dev` | Dev server on :5177, including the tenant proxy |
-| `npm test` | 194 assertions: data fidelity, the state machine, transports, proxy allowlist + log hygiene |
+| `npm test` | 197 assertions: data fidelity, the state machine, transports, proxy allowlist + log hygiene |
 | `npm run build` | Production bundle into `dist/` |
 | `npm start` | Serve the build plus the tenant proxy (see **Deploying**) |
 | `npm run extract` | Regenerate `src/data/signupPrd.generated.json` from the committed source |
@@ -123,6 +123,17 @@ PLAYGROUND_ALLOWED_HOSTS=your-tenant.auth0.com node server.js     # PORT, defaul
 ```
 
 or `docker build -t console . && docker run -p 8080:8080 -e PLAYGROUND_ALLOWED_HOSTS=… console`.
+Both Dockerfile stages sit on a pinned Chainguard Wolfi base and the runtime stage runs as
+`nonroot`. The build stage is pinned too, not just the runtime one: it produces the artifacts the
+runtime stage copies, so it is part of the same supply chain.
+
+**It does not have to be at a domain root.** A platform may mount the console under a path and
+proxy through with the prefix intact. Set `base` at build time via `VITE_BASE_URL` (`./` is correct
+under any mount point) and the app addresses its own routes relative to the document — see
+`src/data/endpoints.js`. The server matches `/__tenant`, `/__jira` and `/__health` wherever in the
+path they appear, and honours `PUBLIC_URL`/`BASE_PATH` for static files. Getting this wrong is
+invisible in a bad way: an unmatched `/__tenant` falls through to the SPA and returns `index.html`,
+which the console reports as "no server" while looking straight at one.
 
 **`PLAYGROUND_ALLOWED_HOSTS` is required, and the server forwards nothing without it.** That is
 deliberate. The dev proxy accepts any `*.auth0.com` host, which is safe on localhost where there is

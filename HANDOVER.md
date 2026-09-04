@@ -6,7 +6,7 @@ reading the code.
 
 ## Where it stands
 
-Everything builds and passes: **194 unit assertions** (`npm test`), **66 browser checks**
+Everything builds and passes: **197 unit assertions** (`npm test`), **66 browser checks**
 (`node tests/e2e-browser.mjs`, needs `npm run dev` running), clean `npm run build`.
 
 Recent work, oldest first:
@@ -42,8 +42,11 @@ for with 405. The built bundle still *calls* `/__tenant` — only the handler is
 own HTML and a `200`, which is the giveaway — the console now says exactly this in a banner the
 moment you open live mode, and in the browser console, so nobody has to read an access log again.
 
-**Fix.** Make the platform run `node server.js` rather than serve `dist/`. The `Dockerfile` already
-does this correctly if the platform builds from one. `PLAYGROUND_ALLOWED_HOSTS` must be set or the
+**Fix.** Make the platform run `node server.js` rather than serve `dist/`. The `Dockerfile` does
+this, and now satisfies the platform's image policy: both stages are on the pinned Chainguard Wolfi
+base and the runtime stage runs as `nonroot`. An earlier version used `node:22-alpine` and was
+rejected — the *runtime* stage is the one the policy checks, but pin the build stage too, since its
+output is copied forward. `PLAYGROUND_ALLOWED_HOSTS` must be set or the
 proxy forwards nothing by design.
 
 If `/__health` *does* answer but `/__tenant` still 405s, the cause is the other one: a proxy in
@@ -97,6 +100,18 @@ ngrok http 8080 --domain=embedded-authorize-specs.ngrok.app   # a reserved domai
 Then open the tunnel URL, switch to **Live tenant**, and press Send. A tunnel is needed rather than
 localhost because the Jira callback must be HTTPS, and because it is the only way to exercise the
 deployed shape — `Secure` cookies and the `x-forwarded-proto` handling included.
+
+## Deploying under a path
+
+The platform reports the console is served at `/a0-b2c-core/apps/v1/embedded-authorize/`, not a
+domain root, and injects `VITE_BASE_URL=./` plus `PUBLIC_URL` for it. Both sides now handle that:
+`src/data/endpoints.js` resolves every fetch against the document base, and `server.js` matches its
+routes wherever in the path they appear. Verified by serving the app under that exact prefix and
+running a live tenant call through it.
+
+The failure mode if this regresses is nasty rather than loud: a root-absolute `fetch('/__tenant')`
+leaves the app, gets whatever is at the domain root, and reports "no server" — the same symptom as
+the deployment problem above, with a different cause.
 
 ## Things that will bite you
 

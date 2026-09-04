@@ -8,6 +8,7 @@
  */
 import { ExternalLink, Loader2, LogOut } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { JIRA } from '@/data/endpoints.js';
 import { Label } from '@/components/ui/label';
 import {
   Select,
@@ -46,7 +47,7 @@ export function JiraBar({ jira }) {
   if (status.unavailable) {
     return (
       <p className="text-xs text-muted-foreground">
-        Findings can be copied as a ticket. Filing them in Jira needs the dev server.
+        Findings can be copied as a ticket. Filing them in Jira needs the server.
       </p>
     );
   }
@@ -56,12 +57,13 @@ export function JiraBar({ jira }) {
       <div className="flex flex-wrap items-center gap-3">
         {/* A full navigation, not fetch: the consent screen is Atlassian's page and has to own the
             window. It comes back to /__jira/callback, which returns here. */}
-        <Button size="sm" variant="outline" onClick={() => { window.location.href = '/__jira/connect'; }}>
+        <Button size="sm" variant="outline" onClick={() => { window.location.href = JIRA('/connect'); }}>
           <ExternalLink className="mr-1.5 h-3.5 w-3.5" /> Connect to Jira
         </Button>
         <p className="text-xs text-muted-foreground">
           Authorization code + PKCE, scoped to reading and writing Jira work. No API token, and
-          nothing to configure — the token stays in the dev server and tickets are filed as you.
+          nothing to configure — the token stays on the server, scoped to your browser, and
+          tickets are filed as you.
         </p>
         {error && <p className="text-xs text-[hsl(var(--bad))]">{error}</p>}
       </div>

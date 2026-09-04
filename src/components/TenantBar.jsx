@@ -33,8 +33,8 @@ export function TenantBar({ tenant, onChange }) {
         ))}
       </div>
       <p className="text-xs text-muted-foreground">
-        Kept in this tab only, never saved to disk. Requests are made by the local dev server, so
-        there is no CORS problem — the same reason Postman can call this endpoint.
+        Kept in this tab only, never saved to disk. Requests are made server-side, so there is no
+        CORS problem — the same reason Postman can call this endpoint.
       </p>
     </div>
   );

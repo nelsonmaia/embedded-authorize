@@ -14,6 +14,12 @@ try {
 }
 
 export default defineConfig({
+  /* Where the app will be served from. A platform that mounts it under a path injects this, and
+     without it here the platform rewrites this file to add it -- which would silently drop the
+     .env loading above. Reading it ourselves keeps one config that works in both places.
+     A relative base is correct under any mount point; see src/data/endpoints.js for the matching
+     rule on the fetch side. */
+  base: process.env.VITE_BASE_URL || '/',
   plugins: [react(), tenantProxy(), jiraIssues()],
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
