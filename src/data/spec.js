@@ -88,8 +88,15 @@ export const ENDPOINT = {
     { name: 'client_id', required: true, doc: 'The public client. No secret: these are public clients by definition.' },
     {
       name: 'connection',
-      required: true,
-      doc: 'Connection NAME. Required on every initiate — there is no tenant default, and the server will not pick one.',
+      required: false,
+      doc:
+        'Connection NAME, and whether you send it is meaningful rather than a convenience. Naming ' +
+        'one PINS the transaction to it: the server has nothing to discover, so `next` carries ' +
+        'exactly the actions that connection supports. OMITTING it asks the server to work out ' +
+        'which connections apply — home-realm discovery — and `next` then carries one action per ' +
+        'eligible connection. The two cannot be combined: a request that names a connection and ' +
+        'expects a choice of federated IdPs back is asking the server to skip discovery and ' +
+        'perform it at the same time.',
     },
     {
       name: 'capabilities',
@@ -259,18 +266,21 @@ export const CAPABILITIES = [
 
   /* ---- MFA (D3) ---------------------------------------------------------- */
   {
-    id: 'action:challenge:totp:v1',
+    id: 'action:verify:totp:v1',
     group: 'mfa',
-    label: 'Challenge — TOTP',
+    label: 'Verify — TOTP',
     status: 'spec',
     source: 'D3',
-    request: [],
+    request: [{ name: 'otp', example: '032252', required: true }],
     emits: [],
     doc:
-      'Sends nothing — the authenticator app already has the code. The challenge still exists so ' +
-      'the server can record the chosen factor and commit to what it will accept next. No `index` ' +
-      '(TOTP is a single logical authenticator). Note the RAPID proposes dropping no-op challenges ' +
-      'like this one entirely; D3 as written keeps them.',
+      'One step, because there is nothing to challenge. A challenge action earns its place when ' +
+      'the server must PRODUCE something the client cannot obtain by itself — a code to deliver, a ' +
+      'push to send, a WebAuthn nonce to sign over. TOTP produces none of those: the authenticator ' +
+      'app already holds the shared secret and derives the code from the clock. A round-trip that ' +
+      'sends nothing and returns nothing is not a step in a protocol, so this model drops it and ' +
+      'verifies directly. action:challenge:recovery-code:v1 is the identical shape and D3 keeps ' +
+      'both — see the known gaps.',
   },
   {
     id: 'action:challenge:phone:v1',
@@ -542,31 +552,87 @@ export const CAPABILITIES = [
     doc: 'Native SDK path — no browser handoff. Facebook returns an access token.',
   },
 
-  /* ---- passkey ---------------------------------------------------------- */
+  /* ---- passkey ----------------------------------------------------------- */
+  /* WebAuthn is inherently two-legged in both directions: the server issues options carrying a
+     challenge it minted, the authenticator answers with something signed over that challenge, and
+     the server verifies it. Neither leg can be collapsed — which is precisely why passkeys DO get
+     a challenge action while TOTP does not. */
   {
-    id: 'authn:passkey:v1',
+    id: 'action:challenge:passkey:v1',
     group: 'passkey',
-    label: 'Passkey — authenticate',
+    label: 'Passkey — challenge (request options)',
     status: 'spec',
     source: 'RAPID',
     request: [],
-    emits: [{ name: 'authn_params_public_key', value: '{ challenge, rpId, ... }' }],
+    emits: [{ name: 'authn_params_public_key', value: '{ challenge, rpId, allowCredentials, userVerification }' }],
     doc:
-      'The RAPID recommends returning the passkey block EAGERLY, alongside the identify:* actions ' +
-      'in the very first response, mirroring the native passkey API — that is what makes ' +
-      'conditional mediation (autofill-style passkey UI) possible, the way Universal Login does it. ' +
-      'Naming is unsettled: the docs carry authn:passkey:v1, action:authn:passkey:v1, and ' +
-      'action:login:passkey:v1 for what looks like the same thing.',
+      'Returns PublicKeyCredentialRequestOptions for navigator.credentials.get(). The challenge is ' +
+      'server-minted and single-use, which is the whole point: it is what the assertion signs over. ' +
+      'The RAPID recommends returning this EAGERLY — the descriptor appears in the very first ' +
+      'response, alongside the identify actions, with authn_params_public_key already populated. ' +
+      'That is what makes conditional mediation (passkey autofill) possible, and it is the same ' +
+      'shape as federated Path A: the server answers ahead of being asked when it can, and the ' +
+      'client saves a round-trip. Called explicitly it re-mints, which is how a client gets fresh ' +
+      'options after a timeout.',
   },
   {
-    id: 'authn:passkey:register:v1',
+    id: 'action:verify:passkey:v1',
     group: 'passkey',
-    label: 'Passkey — register',
+    label: 'Passkey — verify (assertion)',
+    status: 'spec',
+    source: 'RAPID',
+    request: [
+      {
+        name: 'authn_response',
+        example: '{ id, rawId, type, response: { clientDataJSON, authenticatorData, signature, userHandle } }',
+        required: true,
+      },
+    ],
+    emits: [],
+    doc:
+      'The assertion from navigator.credentials.get(), echoed back whole. The server checks the ' +
+      'signature against the stored public key and the challenge against the one it minted, so a ' +
+      'reused or foreign challenge fails here rather than earlier. Identifies AND authenticates in ' +
+      'one step: the credential names the user, so no identify action precedes it.',
+  },
+  {
+    id: 'action:enroll:passkey:v1',
+    group: 'passkey',
+    label: 'Passkey — enroll (creation options)',
     status: 'spec',
     source: 'M1',
     request: [],
+    emits: [
+      {
+        name: 'authn_params_public_key',
+        value: '{ challenge, rp, user, pubKeyCredParams, excludeCredentials }',
+      },
+    ],
+    doc:
+      'Returns PublicKeyCredentialCreationOptions for navigator.credentials.create(). Distinct from ' +
+      'the challenge action despite the shared parameter name: creation options carry rp, user and ' +
+      'excludeCredentials, which request options have no use for. Offered after a user is known — ' +
+      'either freshly signed up, or authenticated by another factor and adding a passkey.',
+  },
+  {
+    id: 'action:enroll:passkey:confirm:v1',
+    group: 'passkey',
+    label: 'Passkey — confirm enrollment (attestation)',
+    status: 'spec',
+    source: 'M1',
+    request: [
+      {
+        name: 'authn_response',
+        example: '{ id, rawId, type, response: { clientDataJSON, attestationObject } }',
+        required: true,
+      },
+    ],
     emits: [],
-    doc: 'Offered when a user does not exist yet — register a passkey instead of failing.',
+    doc:
+      'The credential from navigator.credentials.create(). Named for action:signup:confirm:v1, ' +
+      'which already establishes :confirm: as the second leg of a two-part step. Only on this call ' +
+      'does the credential become usable — a client that stops after create() has enrolled ' +
+      'nothing, and the server must not count the factor until the attestation verifies.',
   },
 ];
 
@@ -764,6 +830,7 @@ export const ERROR_DESCRIPTIONS = [
 export const CONNECTION_PRESETS = [
   {
     id: 'db-email-otp',
+    connectionName: 'Username-Password-Authentication',
     label: 'Database — email OTP only',
     strategy: 'auth0',
     identifiers: ['email'],
@@ -772,6 +839,7 @@ export const CONNECTION_PRESETS = [
   },
   {
     id: 'db-password',
+    connectionName: 'Username-Password-Authentication',
     label: 'Database — password only',
     strategy: 'auth0',
     identifiers: ['email', 'username'],
@@ -782,6 +850,7 @@ export const CONNECTION_PRESETS = [
   },
   {
     id: 'db-both',
+    connectionName: 'Username-Password-Authentication',
     label: 'Database — password + email OTP',
     strategy: 'auth0',
     identifiers: ['email', 'username'],
@@ -793,6 +862,7 @@ export const CONNECTION_PRESETS = [
   },
   {
     id: 'db-full',
+    connectionName: 'Username-Password-Authentication',
     label: 'Database — password, OTP, passkey, phone',
     strategy: 'auth0',
     identifiers: ['email', 'username', 'phone'],
@@ -1227,8 +1297,28 @@ export const KNOWN_GAPS = [
       'authn:otp:email:v1 and action:challenge:email:v1, across different documents.',
     impact:
       'SDK authors reading two RFDs get two vocabularies. The RAPID is the live attempt to settle ' +
-      'the challenge/verify half of this.',
+      'the challenge/verify half of this. This model picks one and applies it everywhere: the ' +
+      'passkey actions are action:challenge:passkey:v1, action:verify:passkey:v1, ' +
+      'action:enroll:passkey:v1 and action:enroll:passkey:confirm:v1, following the same grammar ' +
+      'as action:signup:confirm:v1.',
     source: 'RAPID',
+  },
+  {
+    title: 'A challenge that sends nothing is still specified as a step',
+    severity: 'spec-hygiene',
+    spec:
+      'A challenge action exists so the server can PRODUCE something the client cannot obtain by ' +
+      'itself — a code to deliver, a push to send, a WebAuthn nonce to sign over.',
+    actual:
+      'D3 defines action:challenge:totp:v1 and action:challenge:recovery-code:v1, and neither ' +
+      'sends anything: the authenticator app and the printed code are already in the user\'s ' +
+      'hands. The RAPID proposes dropping such no-ops; D3 as written keeps them.',
+    impact:
+      'A round-trip that carries nothing in either direction still costs a request, a session ' +
+      'rotation and a client state transition. This model drops the TOTP one and verifies ' +
+      'directly, and keeps the recovery-code one only because D3 does — they are the same shape, ' +
+      'and the second should probably go the same way.',
+    source: 'D3',
   },
 ];
 

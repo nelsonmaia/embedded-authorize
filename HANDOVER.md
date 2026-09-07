@@ -6,7 +6,7 @@ reading the code.
 
 ## Where it stands
 
-Everything builds and passes: **197 unit assertions** (`npm test`), **66 browser checks**
+Everything builds and passes: **208 unit assertions** (`npm test`), **66 browser checks**
 (`node tests/e2e-browser.mjs`, needs `npm run dev` running), clean `npm run build`.
 
 Recent work, oldest first:

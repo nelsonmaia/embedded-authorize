@@ -32,9 +32,21 @@ function forDisplay(body) {
  * reference is withheld — which is worth being able to try.
  */
 export function initiateSeed(scenario) {
+  const preset = CONNECTION_PRESETS.find((c) => c.id === scenario.connection);
+
+  /* Whether to send `connection` is a real decision, not a formality.
+     `scenario.connection` is a PRESET id — the shape of the tenant — and was previously copied
+     onto the wire as if it were a connection name. For federation that produced a request which
+     contradicts itself: naming "social-multi" pins the transaction to one connection, and then
+     expects two federated actions back. A server cannot both skip discovery and perform it.
+     So a preset sends its real connection name when it has one, and federated presets send
+     nothing — which is precisely what asks for home-realm discovery. `pinConnection` on a
+     scenario overrides, to show the pinned shape against the discovered one. */
+  const connection = scenario.pinConnection ?? preset?.connectionName;
+
   return {
     client_id: '<client_id>',
-    connection: scenario.connection,
+    ...(connection ? { connection } : {}),
     audience: '<audience>',
     scope: 'openid profile email',
     code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',

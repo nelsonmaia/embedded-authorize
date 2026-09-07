@@ -16,6 +16,7 @@ import { freshState, initiate, submit, sessionPayload, MAX_OTP_ATTEMPTS } from '
 import {
   CONNECTION_PRESETS,
   DECISIONS,
+  ENDPOINT,
   ERRORS,
   byId,
   ARTIFACT_TYPES,
@@ -30,9 +31,10 @@ const preset = (id) => CONNECTION_PRESETS.find((c) => c.id === id);
 /** PKCE is mandatory, so every helper sends it — as any real client would. */
 const PKCE = { code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM', code_challenge_method: 'S256' };
 
-const start = (connectionId, caps, opts = {}) => {
+/** `payload` merges into the initiate body; everything else configures the session. */
+const start = (connectionId, caps, { payload = {}, ...opts } = {}) => {
   const state = freshState({ connection: preset(connectionId), declaredCaps: caps, ...opts });
-  const first = initiate(state, { ...PKCE });
+  const first = initiate(state, { ...PKCE, ...payload });
   return { state, first };
 };
 
@@ -489,18 +491,17 @@ test('an Actions redirect resumes on its own action and only then issues the cod
 });
 
 test('MFA runs before the post-login form, not after it', () => {
-  const { state } = start(
-    'db-both',
-    [...FORM_CAPS, 'action:challenge:totp:v1', 'action:verify:otp:v1'],
-    { postLogin: 'form', mfaPolicy: 'Always' }
-  );
+  const { state } = start('db-both', [...FORM_CAPS, 'action:verify:totp:v1'], {
+    postLogin: 'form',
+    mfaPolicy: 'Always',
+  });
   submit(state, 'action:identify:email:v1', { email: 'hazel.nutt@okta.com' });
 
   const mfa = submit(state, 'action:verify:password:v1', { password: 'Abcd@1234' });
-  assert.deepEqual(actions(mfa), ['action:challenge:totp:v1']);
+  // One action, not two: TOTP has nothing to challenge, so the verify is offered directly.
+  assert.deepEqual(actions(mfa), ['action:verify:totp:v1']);
 
-  submit(state, 'action:challenge:totp:v1', {});
-  const form = submit(state, 'action:verify:otp:v1', { otp: '123456' });
+  const form = submit(state, 'action:verify:totp:v1', { otp: '123456' });
   assert.deepEqual(actions(form), ['action:interaction:form:v1']);
   assert.equal(submit(state, 'action:interaction:form:v1', {}).status, 200);
 });
@@ -1318,4 +1319,146 @@ test('every completed leg says what the server did with the result', async () =>
       assert.match(res.legOutcome.detail, /token vault|SOLVED|COMPLETED|advanced the session/);
     }
   }
+});
+
+/* ── a challenge only exists when the server must produce something ──────── */
+
+test('TOTP verifies in one call, with no challenge in front of it', () => {
+  const { state } = start('db-both', ['action:identify:email:v1', 'action:verify:password:v1', 'action:verify:totp:v1'], {
+    mfaPolicy: 'Always',
+  });
+  submit(state, 'action:identify:email:v1', { email: 'hazel.nutt@okta.com' });
+
+  const mfa = submit(state, 'action:verify:password:v1', { password: 'Abcd@1234' });
+  assert.deepEqual(actions(mfa), ['action:verify:totp:v1'], 'the verify is the entry point');
+
+  assert.equal(submit(state, 'action:verify:totp:v1', { otp: '123456' }).status, 200);
+});
+
+test('a no-op TOTP challenge is gone from the registry', () => {
+  assert.equal(byId('action:challenge:totp:v1'), undefined);
+  assert.ok(byId('action:verify:totp:v1'), 'replaced by a one-step verify');
+});
+
+test('an enrolled TOTP still satisfies an MFA policy on its own', () => {
+  // The regression this guards: the gate counted only action:challenge:* as a way into a second
+  // factor, so removing the no-op challenge made TOTP invisible and skipped MFA altogether — a
+  // silent downgrade rather than a visible failure.
+  const { state } = start('db-both', ['action:identify:email:v1', 'action:verify:password:v1', 'action:verify:totp:v1'], {
+    mfaPolicy: 'Always',
+  });
+  submit(state, 'action:identify:email:v1', { email: 'hazel.nutt@okta.com' });
+
+  const after = submit(state, 'action:verify:password:v1', { password: 'Abcd@1234' });
+  assert.equal(after.status, 403, 'a password alone must not complete the flow');
+  assert.ok(!after.body.authorization_code);
+});
+
+/* ── naming a connection means something ────────────────────────────────── */
+
+test('omitting connection asks for discovery; naming one pins the transaction', () => {
+  const discover = start('social-multi', ['authn:federated:v1']).first;
+  assert.deepEqual(
+    actions(discover),
+    ['authn:federated:google-oauth2:v1', 'authn:federated:github:v1'],
+    'no connection named — one action per eligible connection'
+  );
+  assert.ok(!discover.body.next.some((n) => n.href), 'Path B: nothing resolved, so no href yet');
+
+  const pinned = start('social-multi', ['authn:federated:v1'], { payload: { connection: 'github' } }).first;
+  assert.deepEqual(actions(pinned), ['authn:federated:github:v1'], 'named — nothing left to discover');
+  assert.ok(pinned.body.next[0].href, 'Path A: the server could resolve it, so the href is already there');
+});
+
+test('a request cannot both name a connection and expect a choice back', () => {
+  // The shape this replaces sent the PRESET id as `connection` — "social-multi" is not a
+  // connection, and a server asked to pin to it and then return two federated IdPs is being asked
+  // to skip discovery and perform it at once.
+  const bad = start('social-multi', ['authn:federated:v1'], { payload: { connection: 'social-multi' } }).first;
+  assert.equal(bad.status, 400);
+  assert.equal(bad.body.error, 'invalid_request');
+  assert.match(bad.body.error_description, /not a connection on this tenant/);
+  assert.match(bad.body.error_description, /google-oauth2, github/, 'it names what would have worked');
+});
+
+test('connection is optional, not required', () => {
+  assert.equal(ENDPOINT.initiate.find((p) => p.name === 'connection').required, false);
+  const { first } = start('db-both', ['action:identify:email:v1', 'action:verify:password:v1']);
+  assert.equal(first.status, 403, 'omitting it is legal — the request is accepted and negotiates');
+});
+
+/* ── passkeys: two legs each way ────────────────────────────────────────── */
+
+const ASSERTION = { id: 'q1w2e3r4', type: 'public-key', response: { signature: '<base64url>' } };
+
+test('the passkey challenge is returned eagerly, beside the identify actions', () => {
+  const { first } = start('db-full', [
+    'action:challenge:passkey:v1',
+    'action:verify:passkey:v1',
+    'action:identify:email:v1',
+  ]);
+  const challenge = first.body.next.find((n) => n.action === 'action:challenge:passkey:v1');
+
+  assert.ok(challenge, 'it must be in the FIRST response or conditional mediation is impossible');
+  assert.ok(challenge.authn_params_public_key, 'with its options already populated');
+  assert.ok(actions(first).includes('action:identify:email:v1'), 'alongside identify, not instead of it');
+});
+
+test('an assertion identifies and authenticates in one step', () => {
+  const { state } = start('db-full', ['action:challenge:passkey:v1', 'action:verify:passkey:v1', 'action:identify:email:v1']);
+  // No identify call: the credential names the user.
+  assert.equal(submit(state, 'action:verify:passkey:v1', { authn_response: ASSERTION }).status, 200);
+});
+
+test('an assertion over a spent challenge is refused, and is recoverable', () => {
+  const { state } = start('db-full', ['action:challenge:passkey:v1', 'action:verify:passkey:v1', 'action:identify:email:v1']);
+  const replay = submit(state, 'action:verify:passkey:v1', {
+    authn_response: ASSERTION,
+    simulate: 'stale_challenge',
+  });
+
+  assert.equal(replay.status, 403, 'recoverable, not terminal');
+  assert.ok(replay.body.auth_session, 'the session survives');
+  assert.ok(actions(replay).includes('action:challenge:passkey:v1'), 'fresh options are still on offer');
+});
+
+test('a passkey is not enrolled until the attestation comes back', () => {
+  const caps = [
+    'action:signup:v1',
+    'action:identify:email:v1',
+    'action:challenge:email:v1',
+    'action:verify:otp:v1',
+    'action:enroll:passkey:v1',
+    'action:enroll:passkey:confirm:v1',
+    'action:signup:confirm:v1',
+  ];
+  const { state } = start('db-full', caps);
+  submit(state, 'action:signup:v1', {});
+  submit(state, 'action:identify:email:v1', { email: 'new.user@okta.com' });
+  submit(state, 'action:challenge:email:v1', {});
+  submit(state, 'action:verify:otp:v1', { otp: '123456' });
+
+  // Confirming before asking for options has nothing to confirm.
+  assert.equal(submit(state, 'action:enroll:passkey:confirm:v1', { authn_response: ASSERTION }).status, 400);
+
+  const options = submit(state, 'action:enroll:passkey:v1', {});
+  const descriptor = options.body.next.find((n) => n.action === 'action:enroll:passkey:v1');
+  assert.equal(descriptor, undefined, 'options are outstanding, so it is not re-offered');
+  assert.ok(actions(options).includes('action:enroll:passkey:confirm:v1'), 'the second leg is what is offered');
+
+  const confirmed = submit(state, 'action:enroll:passkey:confirm:v1', { authn_response: ASSERTION });
+  assert.ok(actions(confirmed).includes('action:signup:confirm:v1'), 'and signup can then be confirmed');
+  assert.equal(submit(state, 'action:signup:confirm:v1', {}).status, 200);
+});
+
+test('creation options and request options are different documents', () => {
+  // They share the parameter name authn_params_public_key and are not interchangeable: creation
+  // options carry rp, user and excludeCredentials, which a request has no use for.
+  const creation = byId('action:enroll:passkey:v1').emits[0].value;
+  const request = byId('action:challenge:passkey:v1').emits[0].value;
+
+  assert.match(creation, /\buser\b/);
+  assert.match(creation, /excludeCredentials/);
+  assert.match(request, /allowCredentials/);
+  assert.ok(!/excludeCredentials/.test(request));
 });

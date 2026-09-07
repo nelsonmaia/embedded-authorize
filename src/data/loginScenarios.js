@@ -232,7 +232,7 @@ export const SCENARIOS = [
       'action:identify:email:v1',
       'action:verify:password:v1',
       'action:challenge:recovery-code:v1',
-      'action:challenge:totp:v1',
+      'action:verify:totp:v1',
       'action:verify:recovery-code:v1',
       'action:verify:otp:v1',
     ],
@@ -347,7 +347,7 @@ export const SCENARIOS = [
     caps: [
       'action:identify:email:v1',
       'action:verify:password:v1',
-      'action:challenge:totp:v1',
+      'action:verify:totp:v1',
       'action:challenge:push:v1',
       'action:challenge:recovery-code:v1',
       'action:verify:otp:v1',
@@ -358,8 +358,7 @@ export const SCENARIOS = [
       { action: 'initiate' },
       { action: 'action:identify:email:v1', payload: { email: 'hazel.nutt@okta.com' } },
       { action: 'action:verify:password:v1', payload: { password: 'Abcd@1234' } },
-      { action: 'action:challenge:totp:v1' },
-      { action: 'action:verify:otp:v1', payload: { otp: '123456' } },
+      { action: 'action:verify:totp:v1', payload: { otp: '123456' } },
     ],
   },
   {
@@ -404,7 +403,7 @@ export const SCENARIOS = [
     nativeSdks: [],
     caps: [
       'action:identify:email:v1', 'action:challenge:email:v1', 'action:verify:otp:v1',
-      'action:challenge:totp:v1', 'action:challenge:push:v1', 'action:challenge:recovery-code:v1',
+      'action:verify:totp:v1', 'action:challenge:push:v1', 'action:challenge:recovery-code:v1',
     ],
     // no-mfa@okta.com exists and authenticates fine, but has nothing enrolled.
     script: [
@@ -727,13 +726,15 @@ export const SCENARIOS = [
     categories: ['login'],
     expect: 'continues',
     summary:
-      'The passkey block comes back in the FIRST response, next to the identify actions. That is ' +
-      'what makes conditional mediation (passkey autofill) possible.',
+      'action:challenge:passkey:v1 comes back in the FIRST response, next to the identify actions, ' +
+      'with its options already populated. That is what makes conditional mediation (passkey ' +
+      'autofill) possible — the browser needs options in hand to offer one in an autofill dropdown.',
     connection: 'db-full',
     mfaPolicy: 'Never',
     nativeSdks: [],
     caps: [
-      'authn:passkey:v1',
+      'action:challenge:passkey:v1',
+      'action:verify:passkey:v1',
       'action:identify:email:v1',
       'action:identify:username:v1',
       'action:verify:password:v1',
@@ -741,6 +742,130 @@ export const SCENARIOS = [
       'action:verify:otp:v1',
     ],
     script: [{ action: 'initiate' }],
+  },
+  {
+    id: 'passkey-login',
+    label: 'Passkey — sign in with an assertion',
+    badge: 'spec',
+    categories: ['login'],
+    expect: 'code',
+    summary:
+      'Two calls and no identify step. The options arrive eagerly in the first response, the client ' +
+      'calls navigator.credentials.get(), and the assertion both names the user and proves they ' +
+      'hold the key — a passkey identifies and authenticates at once.',
+    connection: 'db-full',
+    mfaPolicy: 'Never',
+    nativeSdks: [],
+    caps: [
+      'action:challenge:passkey:v1',
+      'action:verify:passkey:v1',
+      'action:identify:email:v1',
+      'action:verify:password:v1',
+    ],
+    script: [
+      { action: 'initiate' },
+      {
+        action: 'action:verify:passkey:v1',
+        payload: {
+          authn_response: {
+            id: 'q1w2e3r4',
+            rawId: 'q1w2e3r4',
+            type: 'public-key',
+            response: {
+              clientDataJSON: '<base64url>',
+              authenticatorData: '<base64url>',
+              signature: '<base64url>',
+              userHandle: '<base64url>',
+            },
+          },
+        },
+      },
+    ],
+  },
+  {
+    id: 'passkey-stale-challenge',
+    label: 'Passkey — assertion over a spent challenge',
+    badge: 'spec',
+    categories: ['login', 'errors'],
+    expect: 'continues',
+    summary:
+      'A captured assertion replayed later. The signature is fine — it is the CHALLENGE that is ' +
+      'wrong, and checking it server-side is what stops the replay. Recoverable: ask for fresh ' +
+      'options and sign again.',
+    connection: 'db-full',
+    mfaPolicy: 'Never',
+    nativeSdks: [],
+    caps: ['action:challenge:passkey:v1', 'action:verify:passkey:v1', 'action:identify:email:v1'],
+    script: [
+      { action: 'initiate' },
+      {
+        action: 'action:verify:passkey:v1',
+        payload: { authn_response: { id: 'q1w2e3r4', type: 'public-key' }, simulate: 'stale_challenge' },
+      },
+    ],
+  },
+  {
+    id: 'passkey-enroll',
+    label: 'Passkey — enroll during signup',
+    badge: 'spec',
+    categories: ['signup'],
+    expect: 'code',
+    summary:
+      'The other direction, and it needs a user first: creation options carry the user handle and ' +
+      'the credentials to exclude. It sits on the same fork as enroll:password, because once the ' +
+      'transaction completes there is no session left to enroll against. Nothing is enrolled until ' +
+      'the attestation comes back — stopping after create() leaves a credential the server has ' +
+      'never seen.',
+    connection: 'db-full',
+    mfaPolicy: 'Never',
+    nativeSdks: [],
+    caps: [
+      'action:signup:v1',
+      'action:identify:email:v1',
+      'action:challenge:email:v1',
+      'action:verify:otp:v1',
+      'action:enroll:passkey:v1',
+      'action:enroll:passkey:confirm:v1',
+      'action:signup:confirm:v1',
+    ],
+    script: [
+      { action: 'initiate' },
+      { action: 'action:signup:v1' },
+      { action: 'action:identify:email:v1', payload: { email: 'new.user@okta.com' } },
+      { action: 'action:challenge:email:v1' },
+      { action: 'action:verify:otp:v1', payload: { otp: '123456' } },
+      { action: 'action:enroll:passkey:v1' },
+      {
+        action: 'action:enroll:passkey:confirm:v1',
+        payload: {
+          authn_response: {
+            id: 'n3w1d',
+            rawId: 'n3w1d',
+            type: 'public-key',
+            response: { clientDataJSON: '<base64url>', attestationObject: '<base64url>' },
+          },
+        },
+      },
+      { action: 'action:signup:confirm:v1' },
+    ],
+  },
+  {
+    id: 'federated-pinned',
+    label: 'Federated — client names the connection',
+    badge: 'spec',
+    categories: ['login', 'federation', 'redirect'],
+    expect: 'code',
+    browser: true,
+    summary:
+      'The same tenant as the two-IdP choice, asked a different question. Naming `connection` on ' +
+      'the initiate leaves the server nothing to discover, so one action comes back with its href ' +
+      'already attached instead of a menu.',
+    connection: 'social-multi',
+    pinConnection: 'github',
+    mfaPolicy: 'Never',
+    nativeSdks: [],
+    caps: ['authn:federated:v1'],
+    script: [{ action: 'initiate' }, { action: 'authn:federated:github:v1' }],
   },
 ];
 

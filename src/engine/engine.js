@@ -300,7 +300,8 @@ export function negotiate(state) {
   const mfaDue = state.phase === 'mfa-required';
   const enrolled = state.user?.enrolledFactors || [];
   for (const [id, factor, descriptor] of [
-    ['action:challenge:totp:v1', 'totp', {}],
+    // TOTP is absent deliberately: there is nothing for the server to send, so it is offered as
+    // action:verify:totp:v1 below and verified in one step.
     ['action:challenge:push:v1', 'push', { index: 0, name: "Diego's iPhone" }],
     ['action:challenge:recovery-code:v1', 'recovery-code', {}],
   ]) {
@@ -344,7 +345,13 @@ export function negotiate(state) {
      strategy — as it was — collapses two same-strategy connections into one action and makes the
      second IdP unreachable. */
   const nativeFor = (fc) => state.nativeSdks.includes(fc.strategy);
-  const allFeds = isFederated(conn) ? federatedConnections(conn) : [];
+  /* A pinned connection removes the discovery step, and with it the fan-out: there is exactly one
+     candidate because the client already said which one. This is what makes Path A vs Path B a
+     consequence of the request rather than only of the tenant. */
+  const eligibleFeds = isFederated(conn) ? federatedConnections(conn) : [];
+  const allFeds = state.pinnedConnection
+    ? eligibleFeds.filter((fc) => fc.name === state.pinnedConnection)
+    : eligibleFeds;
   // A social connection with a native SDK declared goes native instead of opening a browser.
   const redirectFeds = allFeds.filter((fc) => isEnterprise(conn) || !nativeFor(fc));
 
@@ -358,8 +365,11 @@ export function negotiate(state) {
         'authn:federated:v1',
         true,
         pathA
-          ? `Path A — ${fc.name} is the only eligible federated connection, so the server resolves ` +
-            'it without asking and the descriptor already carries its href. One round-trip.'
+          ? state.pinnedConnection
+            ? `Path A — the request named ${fc.name}, so there is nothing to discover. The ` +
+              'descriptor already carries its href. One round-trip, chosen by the client.'
+            : `Path A — ${fc.name} is the only eligible federated connection, so the server ` +
+              'resolves it without asking and the descriptor already carries its href. One round-trip.'
           : `Path B — ${redirectFeds.length} federated connections are eligible, so no href yet. ` +
             'The client renders the choice and echoes one action back; the server mints the ' +
             'request_uri on that second call.',
@@ -395,15 +405,73 @@ export function negotiate(state) {
     );
   }
 
-  /* -- passkey ---------------------------------------------------------- */
+  /* TOTP needs no challenge, so it is offered as a verify from the moment a second factor is due.
+     The client already has the code; asking the server for permission to type it is a formality. */
   consider(
-    'authn:passkey:v1',
-    conn.strategy === 'auth0' && methods.includes('passkey') && !identified,
-    methods.includes('passkey')
-      ? 'Returned EAGERLY alongside the identify actions, with authn_params_public_key — that is ' +
-        'what makes conditional mediation (passkey autofill) possible.'
-      : 'Connection does not enable passkeys.',
-    { authn_params_public_key: '{ challenge, rpId, allowCredentials }' }
+    'action:verify:totp:v1',
+    mfaDue && enrolled.includes('totp'),
+    !mfaDue
+      ? 'A second factor is not currently required.'
+      : enrolled.includes('totp')
+      ? 'Offered directly — the authenticator app already holds the secret, so there is nothing ' +
+        'to challenge and no round-trip to spend on one.'
+      : 'User has no TOTP authenticator enrolled.'
+  );
+
+  /* -- passkey ---------------------------------------------------------- */
+  /* The challenge is offered EAGERLY — populated in the first response rather than after a call —
+     which is the same trick federated Path A plays: answer before being asked when you can. It is
+     what conditional mediation needs, since the browser must have options in hand to offer a
+     passkey in an autofill dropdown. */
+  const passkeys = conn.strategy === 'auth0' && methods.includes('passkey');
+  consider(
+    'action:challenge:passkey:v1',
+    passkeys && !identified,
+    !passkeys
+      ? 'Connection does not enable passkeys.'
+      : identified
+      ? 'A user is already identified — a passkey assertion identifies and authenticates at once, ' +
+        'so it belongs at the start.'
+      : 'Returned EAGERLY alongside the identify actions, with authn_params_public_key already ' +
+        'populated — that is what makes conditional mediation (passkey autofill) possible.',
+    { authn_params_public_key: '{ challenge, rpId, allowCredentials, userVerification }' }
+  );
+
+  consider(
+    'action:verify:passkey:v1',
+    passkeys && !identified,
+    !passkeys
+      ? 'Connection does not enable passkeys.'
+      : identified
+      ? 'The assertion carries the credential id, which names the user — there is nobody left to identify.'
+      : 'Send the assertion from navigator.credentials.get() here. Offered beside the challenge so ' +
+        'a client using the eagerly-returned options can go straight to it.'
+  );
+
+  /* Enrollment is the other direction, and needs a user first: the creation options carry the
+     user handle and the credentials to exclude. */
+  consider(
+    'action:enroll:passkey:v1',
+    passkeys && identified && state.intent === 'signup' && !state.passkeyEnrollment,
+    !passkeys
+      ? 'Connection does not enable passkeys.'
+      : !identified
+      ? 'Creation options name the user they are for, so somebody has to be identified first.'
+      : state.passkeyEnrollment
+      ? 'Creation options are already outstanding — confirm them instead.'
+      : state.intent !== 'signup'
+      ? 'Enrollment sits on the signup fork, beside enroll:password. A completed sign-in has no ' +
+        'session left to enroll against.'
+      : 'Adds a passkey to the user who has just been created.',
+    { authn_params_public_key: '{ challenge, rp, user, pubKeyCredParams, excludeCredentials }' }
+  );
+
+  consider(
+    'action:enroll:passkey:confirm:v1',
+    passkeys && !!state.passkeyEnrollment,
+    state.passkeyEnrollment
+      ? 'Creation options are outstanding — send the attestation from navigator.credentials.create().'
+      : 'Nothing to confirm: ask for creation options first.'
   );
 
   /* -- signup ----------------------------------------------------------- */
@@ -615,7 +683,7 @@ function hasUsableAuthMethod(state) {
     if (methods.includes('email_otp') && any('action:challenge:email:v1', 'action:verify:otp:v1')) return true;
     if (methods.includes('phone_otp') && any('action:challenge:phone:v1', 'action:verify:otp:v1')) return true;
     if (methods.includes('password') && any('action:verify:password:v1')) return true;
-    if (methods.includes('passkey') && any('authn:passkey:v1', 'authn:passkey:register:v1')) return true;
+    if (methods.includes('passkey') && any('action:challenge:passkey:v1', 'action:verify:passkey:v1')) return true;
     return false;
   }
   if (conn.strategy === 'email') return any('action:challenge:email:v1', 'action:verify:otp:v1');
@@ -632,7 +700,25 @@ function hasUsableAuthMethod(state) {
 
 /** The initiate call. */
 export function initiate(state, payload = {}) {
-  if (!state.connection) return badRequest("data must have required property 'connection'");
+  /* `connection` is deliberately NOT required, and the choice carries meaning.
+
+     Naming one PINS the transaction: the server has nothing to discover, so `next` carries exactly
+     what that connection supports — for a federated tenant, one action rather than a menu.
+     Omitting it asks for home-realm discovery, and `next` then carries one action per eligible
+     connection. A request cannot ask for both. */
+  if (payload.connection) {
+    const known = [
+      state.connection.connectionName,
+      ...(state.connection.connections || []).map((c) => c.name),
+    ].filter(Boolean);
+
+    if (!known.includes(payload.connection)) {
+      return badRequest(
+        `"${payload.connection}" is not a connection on this tenant. Known: ${known.join(', ') || 'none'}.`
+      );
+    }
+    state.pinnedConnection = payload.connection;
+  }
 
   // PKCE is a precondition, not an option. This endpoint serves public clients and issues an
   // authorization code; without a challenge that code is redeemable by anyone who intercepts it.
@@ -801,9 +887,23 @@ export function submit(state, action, payload = {}) {
     case 'action:challenge:phone:v1':
       return doOtpChallenge(state, action);
 
-    case 'action:challenge:totp:v1':
     case 'action:challenge:recovery-code:v1':
       return doNoopChallenge(state, action);
+
+    case 'action:verify:totp:v1':
+      return doVerifyTotp(state, payload);
+
+    case 'action:challenge:passkey:v1':
+      return doPasskeyChallenge(state);
+
+    case 'action:verify:passkey:v1':
+      return doVerifyPasskey(state, payload);
+
+    case 'action:enroll:passkey:v1':
+      return doPasskeyEnroll(state);
+
+    case 'action:enroll:passkey:confirm:v1':
+      return doPasskeyEnrollConfirm(state, payload);
 
     case 'action:challenge:push:v1':
       return doPushChallenge(state);
@@ -981,9 +1081,131 @@ function doOtpChallenge(state, action) {
   return res;
 }
 
-function doNoopChallenge(state, action) {
-  const type = action === 'action:challenge:totp:v1' ? 'otp' : 'recovery-code';
-  state.pendingChallenge = { type, channel: type === 'otp' ? 'totp' : 'recovery-code', masked: '' };
+/* ── TOTP ─────────────────────────────────────────────────────────────────
+   One call. Nothing precedes it, because there is nothing for the server to send. */
+function doVerifyTotp(state, payload) {
+  if (!payload.otp) return badRequest('Missing "otp".', state);
+  if (payload.simulate === 'upstream_error') return upstreamOutage(state, 'auth0-mfa');
+
+  if (state.phase !== 'mfa-required') {
+    return badRequest('The action is not permitted in the current state.', state);
+  }
+
+  // 032252 is the code the registry documents; anything else is wrong. A wrong code is
+  // RECOVERABLE and counts against the same budget every other code check uses.
+  if (payload.otp !== SPEC_OTP) {
+    state.attempts += 1;
+    if (state.attempts >= MAX_OTP_ATTEMPTS) {
+      const res = terminal(state, 'too_many_wrong_otp_attempts');
+      res.note =
+        `Cap of ${MAX_OTP_ATTEMPTS} reached. Terminal: no next, no auth_session. The budget is ` +
+        'shared with every other code check — a TOTP retry is cheaper in round-trips, not in ' +
+        'attempts.';
+      return res;
+    }
+
+    const { offered } = negotiate(state);
+    state.next = nextFromOffered(offered);
+    const res = continuation(state, state.next, 'invalid_identifier_or_code');
+    res.note =
+      `Wrong code — spec mode accepts ${SPEC_OTP}. Attempt ${state.attempts}/${MAX_OTP_ATTEMPTS}. ` +
+      'Recoverable: the same action is offered again against the rotated session. Note there is no ' +
+      'challenge to re-issue — a TOTP retry costs one call, not two.';
+    return res;
+  }
+
+  state.completedFactors.push('totp');
+  state.attempts = 0;
+  state.amrs.push({ name: 'mfa', timestamp: Date.now(), type: 'totp' });
+  return afterFactor(state, 'TOTP accepted. No challenge was issued, and none was needed.');
+}
+
+/* ── passkeys ─────────────────────────────────────────────────────────────
+   Two legs each way. The server mints a challenge and the authenticator signs over it, so neither
+   direction can be collapsed into a single call the way TOTP can. */
+
+/** A stand-in for a server-minted WebAuthn challenge. Single-use, and that is the point. */
+const mintChallenge = () => `c${Math.random().toString(36).slice(2, 10)}`;
+
+function doPasskeyChallenge(state) {
+  state.passkeyChallenge = mintChallenge();
+
+  const { offered, withheld } = negotiate(state);
+  state.next = nextFromOffered(offered);
+  const res = continuation(state, state.next);
+  res.negotiation = { offered, withheld };
+  res.note =
+    'Fresh PublicKeyCredentialRequestOptions. Calling this explicitly is only necessary when the ' +
+    'eagerly-returned options have gone stale — the first response already carried a set, which is ' +
+    'what conditional mediation needs.';
+  return res;
+}
+
+function doVerifyPasskey(state, payload) {
+  if (!payload.authn_response) return badRequest('Missing "authn_response".', state);
+  if (payload.simulate === 'upstream_error') return upstreamOutage(state, 'auth0-users');
+
+  // The assertion signs over the challenge the server minted. A missing or foreign one fails here
+  // rather than earlier, which is why replaying a captured assertion does not work.
+  if (payload.simulate === 'stale_challenge') {
+    const { offered } = negotiate(state);
+    state.next = nextFromOffered(offered);
+    const res = continuation(state, state.next, 'invalid_identifier_or_password');
+    res.note =
+      'The assertion signed over a challenge this session did not mint, or minted and already ' +
+      'spent. Recoverable: ask for fresh options and sign again.';
+    return res;
+  }
+
+  // A passkey identifies and authenticates at once — the credential id names the user, so no
+  // identify step ran and none was needed.
+  state.user = state.user ?? { email: 'diego@example.com', enrolledFactors: [] };
+  state.identified = true;
+  state.completedFactors.push('passkey');
+  state.amrs.push({ name: 'passkey', timestamp: Date.now(), type: 'webauthn' });
+  return afterFactor(
+    state,
+    'Assertion verified against the stored public key. One step identified AND authenticated the ' +
+      'user: the credential id is the identifier.'
+  );
+}
+
+function doPasskeyEnroll(state) {
+  state.passkeyEnrollment = { challenge: mintChallenge() };
+
+  const { offered, withheld } = negotiate(state);
+  state.next = nextFromOffered(offered);
+  const res = continuation(state, state.next);
+  res.negotiation = { offered, withheld };
+  res.note =
+    'PublicKeyCredentialCreationOptions. These carry rp, user and excludeCredentials, which request ' +
+    'options have no use for — the same parameter name, a different document. Nothing is enrolled ' +
+    'yet: a client that stops here has created a credential the server has never seen.';
+  return res;
+}
+
+function doPasskeyEnrollConfirm(state, payload) {
+  if (!payload.authn_response) return badRequest('Missing "authn_response".', state);
+  if (!state.passkeyEnrollment) {
+    return badRequest('The action is not permitted in the current state.', state);
+  }
+
+  state.passkeyEnrollment = null;
+  state.user = state.user ?? { email: 'diego@example.com', enrolledFactors: [] };
+  state.user.enrolledFactors = [...(state.user.enrolledFactors || []), 'passkey'];
+  state.completedFactors.push('passkey');
+
+  return afterFactor(
+    state,
+    'Attestation verified and the credential stored. Only now is the passkey usable — the factor ' +
+      'is not counted on the create() call alone.'
+  );
+}
+
+function doNoopChallenge(state) {
+  // Only recovery codes reach here now. TOTP used to as well, and did nothing on the way through;
+  // it is a one-step verify instead. This action is the same shape and is kept because D3 keeps it.
+  state.pendingChallenge = { type: 'recovery-code', channel: 'recovery-code', masked: '' };
   state.attempts = 0;
 
   const { offered, withheld } = negotiate(state);
@@ -1279,15 +1501,6 @@ function unimplementedNote(action) {
       'Client-declared capability, not a server action. Declaring it changes the shape of the ' +
       'action:interaction:form:v1 descriptor — form_id + state instead of an href — but it is ' +
       'never something the client invokes.'
-    );
-  }
-  if (action.startsWith('authn:passkey:')) {
-    return (
-      'Genuinely unimplemented here: the passkey sources (RAPID, Milestone 1) are cited in the ' +
-      'registry but are not among the specs committed to this repo, so there is nothing to build ' +
-      'a faithful handler from. The request/response shapes would have to be invented, which is ' +
-      'exactly what this playground exists not to do. Naming is unsettled in the docs too — ' +
-      'authn:passkey:v1, action:authn:passkey:v1 and action:login:passkey:v1 all appear.'
     );
   }
   if (action === 'action:identify:phone:v1') {
@@ -1817,13 +2030,25 @@ function doEnrollPassword(state, payload) {
  */
 function afterFactor(state, note) {
   if (state.intent === 'signup') {
+    const methods = state.connection.authMethods || [];
     const canEnroll =
       state.declaredCaps.includes('action:enroll:password:v1') &&
-      (state.connection.authMethods || []).includes('password') &&
+      methods.includes('password') &&
       !state.completedFactors.includes('password');
-    const next = canEnroll
-      ? [{ action: 'action:enroll:password:v1' }, { action: 'action:signup:confirm:v1' }]
-      : [{ action: 'action:signup:confirm:v1' }];
+
+    /* Passkey enrollment belongs on the same fork as password enrollment, for the same reason:
+       a credential is being created for a user who now exists but has not chosen how to return.
+       Once the transaction completes there is no longer a session to enroll against. */
+    const canEnrollPasskey =
+      state.declaredCaps.includes('action:enroll:passkey:v1') &&
+      methods.includes('passkey') &&
+      !state.completedFactors.includes('passkey');
+
+    const next = [
+      ...(canEnroll ? [{ action: 'action:enroll:password:v1' }] : []),
+      ...(canEnrollPasskey ? [{ action: 'action:enroll:passkey:v1' }] : []),
+      { action: 'action:signup:confirm:v1' },
+    ];
     state.next = next;
     const res = continuation(state, next);
     res.note = note + ' Identifier verified — signup can now be confirmed.';
@@ -1837,7 +2062,12 @@ function afterFactor(state, note) {
     const enrolled = state.user?.enrolledFactors || [];
     state.phase = 'mfa-required';
     const { offered, withheld } = negotiate(state);
-    const next = nextFromOffered(offered.filter((o) => o.id.startsWith('action:challenge:')));
+    /* What counts as a way IN to a second factor. Every challenge is one, and so is verify:totp —
+       it has no challenge in front of it, which is the whole point of dropping the no-op. Filtering
+       on the "challenge:" prefix alone made an enrolled TOTP invisible here and skipped MFA
+       entirely, which is a silent downgrade rather than a visible error. */
+    const startsAFactor = (id) => id.startsWith('action:challenge:') || id === 'action:verify:totp:v1';
+    const next = nextFromOffered(offered.filter((o) => startsAFactor(o.id)));
 
     if (next.length === 0) {
       const res = terminal(state, 'no_eligible_factors');

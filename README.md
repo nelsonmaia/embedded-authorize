@@ -18,7 +18,7 @@ npm run dev            # → http://localhost:5177
 | Script | What it does |
 |---|---|
 | `npm run dev` | Dev server on :5177, including the tenant proxy |
-| `npm test` | 197 assertions: data fidelity, the state machine, transports, proxy allowlist + log hygiene |
+| `npm test` | 208 assertions: data fidelity, the state machine, transports, proxy allowlist + log hygiene |
 | `npm run build` | Production bundle into `dist/` |
 | `npm start` | Serve the build plus the tenant proxy (see **Deploying**) |
 | `npm run extract` | Regenerate `src/data/signupPrd.generated.json` from the committed source |
