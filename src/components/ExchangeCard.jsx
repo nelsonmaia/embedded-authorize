@@ -217,7 +217,7 @@ export function ExchangeCard({
   index,
   title,
   hint,
-  path = '/e/authorize',
+  path,
   draftText,
   onDraftChange,
   parseError,
@@ -229,6 +229,10 @@ export function ExchangeCard({
   onSend,
   onReset,
 }) {
+  /* The token exchange is a different endpoint, so the header follows the request that was
+     actually made rather than assuming every card is /e/authorize. */
+  const endpoint = path ?? result?.request?.path ?? '/e/authorize';
+
   const pending = !result;
   const [copied, setCopied] = useState(false);
   const tone = result ? TONE[result.status] || { variant: 'secondary', label: '' } : null;
@@ -237,7 +241,7 @@ export function ExchangeCard({
   const copy = async () => {
     const body = pending ? safeParse(draftText) : result.request.body;
     try {
-      await navigator.clipboard.writeText(curlFor(domain, 'POST', path, body));
+      await navigator.clipboard.writeText(curlFor(domain, 'POST', endpoint, body));
       setCopied(true);
       setTimeout(() => setCopied(false), 1400);
     } catch { /* insecure context — clipboard unavailable */ }
@@ -274,7 +278,7 @@ export function ExchangeCard({
         <div className="min-w-0 border-b lg:border-b-0 lg:border-r">
           <PaneHead>
             <span className="font-mono text-[hsl(var(--ok))]">POST</span>
-            <span className="font-mono normal-case tracking-normal">{path}</span>
+            <span className="font-mono normal-case tracking-normal">{endpoint}</span>
             <span className="flex-1" />
             {pending && <span className="normal-case tracking-normal text-primary">editable</span>}
           </PaneHead>

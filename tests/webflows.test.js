@@ -12,7 +12,16 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { freshState, initiate, submit, sessionPayload, MAX_OTP_ATTEMPTS } from '../src/engine/engine.js';
+import {
+  freshState,
+  initiate,
+  submit,
+  sessionPayload,
+  exchangeCode,
+  MAX_OTP_ATTEMPTS,
+  SPEC_OTP,
+  SPEC_CODE_VERIFIER,
+} from '../src/engine/engine.js';
 import {
   CONNECTION_PRESETS,
   DECISIONS,
@@ -1461,4 +1470,98 @@ test('creation options and request options are different documents', () => {
   assert.match(creation, /excludeCredentials/);
   assert.match(request, /allowCredentials/);
   assert.ok(!/excludeCredentials/.test(request));
+});
+
+/* ── redeeming the code ─────────────────────────────────────────────────── */
+
+const redeem = (state, patch = {}) =>
+  exchangeCode(state, {
+    grant_type: 'authorization_code',
+    client_id: '<client_id>',
+    code: state.authorizationCode,
+    code_verifier: SPEC_CODE_VERIFIER,
+    ...patch,
+  });
+
+/** Walk a flow to its authorization code. */
+function toCode() {
+  const { state } = start('db-email-otp', [
+    'action:identify:email:v1',
+    'action:challenge:email:v1',
+    'action:verify:otp:v1',
+  ]);
+  submit(state, 'action:identify:email:v1', { email: 'hazel.nutt@okta.com' });
+  submit(state, 'action:challenge:email:v1', {});
+  const done = submit(state, 'action:verify:otp:v1', { otp: SPEC_OTP });
+  assert.ok(done.body.authorization_code, 'the flow must reach a code');
+  return state;
+}
+
+test('the seed challenge really is the S256 of the verifier the console shows', async () => {
+  // Not decoration. It means the exchange verifies for real rather than waving the check through,
+  // and both values are RFC 7636's own example, so they can be checked against the document.
+  const state = toCode();
+  assert.equal(state.codeChallenge, 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM');
+  assert.equal((await redeem(state)).status, 200, 'the documented pair must actually match');
+});
+
+test('the code exchanges for an ordinary token response', async () => {
+  const res = await redeem(toCode());
+
+  assert.equal(res.status, 200);
+  for (const field of ['access_token', 'id_token', 'token_type', 'expires_in', 'scope']) {
+    assert.ok(res.body[field] !== undefined, `missing ${field}`);
+  }
+  assert.equal(res.body.token_type, 'Bearer');
+  // The whole claim of this design: nothing in the response records that no browser was involved.
+  assert.ok(!JSON.stringify(res.body).includes('auth_session'));
+  assert.ok(!JSON.stringify(res.body).includes('embedded'));
+});
+
+test('a refresh token appears only when offline_access was asked for', async () => {
+  const plain = await redeem(toCode());
+  assert.equal(plain.body.refresh_token, undefined);
+
+  const state = toCode();
+  state.scope = 'openid profile email offline_access';
+  const offline = await redeem(state);
+  assert.ok(offline.body.refresh_token);
+  assert.match(offline.body.scope, /offline_access/);
+});
+
+test('a code is single use', async () => {
+  const state = toCode();
+  assert.equal((await redeem(state)).status, 200);
+
+  const replay = await redeem(state);
+  assert.equal(replay.status, 400);
+  assert.equal(replay.body.error, 'invalid_grant');
+  assert.match(replay.body.error_description, /already been redeemed/);
+});
+
+test('PKCE is verified at the exchange, which is the only place it can be', async () => {
+  // The challenge went out on the initiate; this is where the client proves it made it. An
+  // attacker holding an intercepted code does not hold the verifier.
+  const wrong = await redeem(toCode(), { code_verifier: 'not-the-verifier' });
+  assert.equal(wrong.status, 400);
+  assert.equal(wrong.body.error, 'invalid_grant');
+  assert.match(wrong.body.error_description, /does not match/);
+
+  const missing = await redeem(toCode(), { code_verifier: undefined });
+  assert.equal(missing.body.error, 'invalid_grant');
+  assert.match(missing.body.error_description, /Missing "code_verifier"/);
+});
+
+test('a code from another transaction is refused', async () => {
+  const res = await redeem(toCode(), { code: 'AUTH_CODE_somebodyelse' });
+  assert.equal(res.body.error, 'invalid_grant');
+  assert.match(res.body.error_description, /not issued by this transaction/);
+});
+
+test('no grant type of its own was introduced', async () => {
+  // The point being demonstrated: /e/authorize replaces the browser leg and nothing else, so the
+  // redemption is the plain RFC 6749 grant. Anything else is refused.
+  const res = await redeem(toCode(), { grant_type: 'urn:ietf:params:oauth:grant-type:embedded' });
+  assert.equal(res.body.error, 'unsupported_grant_type');
+  assert.match(res.body.error_description, /introduces no grant type of its own/);
 });

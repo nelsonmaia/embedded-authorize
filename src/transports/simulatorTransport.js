@@ -11,7 +11,17 @@
  * snapshots, so React never has to notice a mutated reference. That retires the manual `version`
  * counter the old hook needed.
  */
-import { freshState, initiate, submit, sessionPayload, negotiate, SPEC_OTP } from '../engine/engine.js';
+import {
+  freshState,
+  initiate,
+  submit,
+  sessionPayload,
+  negotiate,
+  exchangeCode,
+  SPEC_OTP,
+  SPEC_CODE_VERIFIER,
+  TOKEN_PATH,
+} from '../engine/engine.js';
 import { CONNECTION_PRESETS, byId } from '../data/spec.js';
 
 const SECRETS = ['password', 'recovery_code'];
@@ -31,6 +41,20 @@ function forDisplay(body) {
  * `request_uri` on a redirect_to_web response. Delete it and the handoffs still work, but the
  * reference is withheld — which is worth being able to try.
  */
+/**
+ * What a client sends to redeem the code. Ordinary in every respect — that is the claim being
+ * made. The verifier is RFC 7636's own example, and the seed's code_challenge really is its S256,
+ * so the exchange verifies for real rather than waving the check through.
+ */
+export function tokenSeed(state) {
+  return {
+    grant_type: 'authorization_code',
+    client_id: '<client_id>',
+    code: state.authorizationCode ?? '<authorization_code>',
+    ...(state.codeChallenge ? { code_verifier: SPEC_CODE_VERIFIER } : {}),
+  };
+}
+
 export function initiateSeed(scenario) {
   const preset = CONNECTION_PRESETS.find((c) => c.id === scenario.connection);
 
@@ -95,6 +119,23 @@ export function simulatorTransport({ scenario }) {
       // here has consequences, because the draft forbids returning a request_uri without it.
       step = 1;
       return wrap(sent, initiate(state, sent));
+    },
+
+    tokenSeed() {
+      return tokenSeed(state);
+    },
+
+    /* The code is redeemed against the SAME session state the flow just built, so PKCE is checked
+       against the challenge that actually went out and the single-use rule actually bites. */
+    async exchange(body) {
+      const sent = body ?? tokenSeed(state);
+      const r = await exchangeCode(state, sent);
+      return {
+        request: { method: 'POST', path: TOKEN_PATH, body: forDisplay(sent) },
+        status: r.status,
+        body: structuredClone(r.body),
+        note: r.note,
+      };
     },
 
     async send(body) {

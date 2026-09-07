@@ -14,6 +14,7 @@
  *     a response, it says so. Fabricating spec would make this tool worse than the document.
  */
 import { maskIdentifier } from '../data/spec.js';
+import { exchangeCode, SPEC_CODE_VERIFIER, TOKEN_PATH } from '../engine/engine.js';
 
 /**
  * Re-mask `next[].identifier` when — and only when — the user changed the identifier they sent.
@@ -40,10 +41,26 @@ function remask(body, sentBody, documentedBody) {
 
 export function cannedTransport({ scenario, happyPath }) {
   let cursor = 0;
+  /* The recording documents /e/authorize and stops at the code. The exchange that follows is
+     ordinary OAuth and identical in every mode — which is the claim being demonstrated — so it is
+     modelled rather than replayed. Nothing tenant-specific is invented: the response shape is the
+     one RFC 6749 defines, and the code is the recorded one. */
+  const tokenState = { authorizationCode: null, codeChallenge: null, codeRedeemed: false, scope: null };
 
   const at = (i) => happyPath.exchanges[i] ?? null;
 
-  const resultFrom = (ex, sentBody) => ({
+  const resultFrom = (ex, sentBody) => {
+    // Track what the recording issued, so the exchange redeems the real code rather than a token.
+    if (ex.response.body?.authorization_code) {
+      tokenState.authorizationCode = ex.response.body.authorization_code;
+      tokenState.codeRedeemed = false;
+    }
+    if (sentBody?.code_challenge) tokenState.codeChallenge = String(sentBody.code_challenge);
+    if (sentBody?.scope) tokenState.scope = String(sentBody.scope);
+    return recordedResult(ex, sentBody);
+  };
+
+  const recordedResult = (ex, sentBody) => ({
     request: { method: 'POST', path: '/e/authorize', body: sentBody },
     status: ex.response.status,
     statusDerived: true,
@@ -55,6 +72,26 @@ export function cannedTransport({ scenario, happyPath }) {
 
   return {
     kind: 'canned',
+
+    tokenSeed() {
+      return {
+        grant_type: 'authorization_code',
+        client_id: '<client_id>',
+        code: tokenState.authorizationCode ?? '<authorization_code>',
+        ...(tokenState.codeChallenge ? { code_verifier: SPEC_CODE_VERIFIER } : {}),
+      };
+    },
+
+    async exchange(body) {
+      const sent = body ?? this.tokenSeed();
+      const r = await exchangeCode(tokenState, sent);
+      return {
+        request: { method: 'POST', path: TOKEN_PATH, body: sent },
+        status: r.status,
+        body: structuredClone(r.body),
+        note: r.note,
+      };
+    },
     isLive: false,
 
     /** `body` is what the user typed. It is authoritative — the documented body is only a seed. */

@@ -31,6 +31,8 @@ export function liveTransport({ tenant, capabilities }) {
   /* Sessions this client has already spent on a successful call. Replay is invisible in any one
      response, so it is tracked here and handed to the checker. */
   const spent = new Set();
+  let authorizationCode = null;
+  let sentCodeChallenge = false;
 
   async function call(path, body) {
     let res;
@@ -80,6 +82,7 @@ export function liveTransport({ tenant, capabilities }) {
     const replayed = !!sent.auth_session && spent.has(sent.auth_session);
     if (sent.auth_session && wasAccepted(env.status, env.body)) spent.add(sent.auth_session);
     if (env.body?.auth_session) authSession = env.body.auth_session;
+    if (env.body?.authorization_code) authorizationCode = env.body.authorization_code;
 
     const exchange = {
       context: { sessionAlreadyUsed: replayed, declared },
@@ -125,6 +128,8 @@ export function liveTransport({ tenant, capabilities }) {
       spent.clear();
       // Read from what was actually sent — the payload is editable, so the seed is only a default.
       if (Array.isArray(sent.capabilities)) declared = [...sent.capabilities];
+      sentCodeChallenge = !!sent.code_challenge;
+      authorizationCode = null;
       return wrap(sent, await call('/e/authorize', sent));
     },
 
@@ -134,12 +139,24 @@ export function liveTransport({ tenant, capabilities }) {
       return wrap(sent, await call('/e/authorize', sent));
     },
 
-    async exchange(code) {
-      const sent = {
+    /**
+     * Redeem the code at the tenant's real token endpoint.
+     *
+     * No code_verifier unless a challenge actually went out. Live mode omits PKCE because the
+     * initiate schema rejects it, and sending a verifier for a challenge that was never made is a
+     * request no client would ever produce.
+     */
+    tokenSeed() {
+      return {
         grant_type: 'authorization_code',
-        code,
         client_id: tenant.clientId.trim(),
+        code: authorizationCode ?? '<authorization_code>',
+        ...(sentCodeChallenge ? { code_verifier: '<code_verifier>' } : {}),
       };
+    },
+
+    async exchange(body) {
+      const sent = body ?? this.tokenSeed();
       return wrap(sent, await call('/oauth/token', sent), '/oauth/token');
     },
 

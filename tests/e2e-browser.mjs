@@ -601,6 +601,68 @@ try {
   );
   check('the verdict is on the exchange, not in a summary box', conformance.noSummaryBox, JSON.stringify(conformance));
 
+  /* ── the token exchange ───────────────────────────────────────────────── */
+
+  /* From a clean load: earlier blocks leave the picker on whatever they were testing, and an
+     error scenario never reaches a code. Reloading also drops the helpers, so re-inject them. */
+  await cdp.send('Page.navigate', { url: URL_UNDER_TEST });
+  await cdp.eval(`
+    for (let i = 0; i < 80; i++) {
+      if (document.querySelector('textarea')) return true;
+      await new Promise(r => setTimeout(r, 100));
+    }
+    return false;
+  `);
+  await cdp.eval(HELPERS + 'return true;');
+
+  const tokens = await cdp.eval(`
+    for (let i = 0; i < 10; i++) {
+      const send = __t.btn('Send');
+      if (!send || send.disabled) break;
+      send.click();
+      await __t.wait(500);
+      if (document.body.innerText.includes('An authorization code was issued')) break;
+    }
+    const reachedCode = document.body.innerText.includes('An authorization code was issued');
+
+    const offered = !!__t.btn('Exchange for tokens');
+    __t.btn('Exchange for tokens')?.click();
+    await __t.wait(700);
+
+    const paths = [...document.querySelectorAll('span.font-mono')]
+      .map(e => e.textContent.trim()).filter(t => t.startsWith('/'));
+    const afterExchange = document.body.innerText;
+
+    // And again, because a code is single use.
+    __t.btn('Redeem it again')?.click();
+    await __t.wait(700);
+
+    return {
+      reachedCode,
+      offered,
+      // A different endpoint, and the card must say so rather than inheriting /e/authorize.
+      namesTokenEndpoint: paths.includes('/oauth/token'),
+      stillShowsAuthorize: paths.includes('/e/authorize'),
+      hasTokens: /access_token/.test(afterExchange) && /Bearer/.test(afterExchange),
+      ordinaryGrant: /"grant_type": "authorization_code"/.test(afterExchange),
+      replayRefused: /already been redeemed/.test(document.body.innerText),
+    };
+  `);
+  check('a completed flow offers the token exchange', tokens.reachedCode && tokens.offered, JSON.stringify(tokens));
+  check(
+    'the exchange is drawn against /oauth/token, beside the /e/authorize calls',
+    tokens.namesTokenEndpoint && tokens.stillShowsAuthorize,
+    JSON.stringify(tokens)
+  );
+  check('it redeems the code with the ordinary grant', tokens.ordinaryGrant, JSON.stringify(tokens));
+  check('and returns a real token response', tokens.hasTokens, JSON.stringify(tokens));
+  check('redeeming a second time is refused', tokens.replayRefused, JSON.stringify(tokens));
+
+  // Back to live mode: the reload above dropped it, and the Jira checks below run there. A real
+  // click, not a synthetic one — these are Radix tabs, which is why the harness has clickReal.
+  await cdp.clickReal(`[...document.querySelectorAll('[role="tab"]')].find(t => /Live tenant/.test(t.textContent))`);
+  await cdp.eval(`await __t.wait(500); return true;`);
+
   /* ── connecting to Jira ───────────────────────────────────────────────── */
 
   const jira = await cdp.eval(`

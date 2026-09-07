@@ -37,6 +37,10 @@ export function ConsoleView({ mode, flowId, variantId, onFlowChange, onVariantCh
   const [busy, setBusy] = useState(false);
   const [outOfOrder, setOutOfOrder] = useState(false);
   const [nonce, setNonce] = useState(0);
+  /* The token exchange, kept apart from `sent` because it is a different endpoint. Folding it into
+     the transcript would suggest /e/authorize issued the tokens, which is the one thing this whole
+     design is careful not to claim. */
+  const [exchanged, setExchanged] = useState([]);
   /* The Jira connection, only asked for in live mode — spec mode has no tenant to find a gap in.
      Null until the dev server answers, which is why the button does not flicker between labels. */
   const jira = useJira({ enabled: mode === 'live' });
@@ -84,12 +88,25 @@ export function ConsoleView({ mode, flowId, variantId, onFlowChange, onVariantCh
     transport.current = t;
     seedRef.current = pretty(seed);
     setSent([]);
+    setExchanged([]);
     setDraft(pretty(seed));
     setPendingTitle(variant?.happyPath.exchanges[0]?.label ?? 'Start the session');
     setAwaitingChoice(false);
     setOutOfOrder(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
+
+  const redeem = useCallback(async () => {
+    const t = transport.current;
+    if (!t?.exchange) return;
+    setBusy(true);
+    try {
+      const result = await t.exchange();
+      setExchanged((prev) => [...prev, result]);
+    } finally {
+      setBusy(false);
+    }
+  }, []);
 
   const parseError = useMemo(() => {
     if (!draft.trim()) return 'Request body is empty.';
@@ -277,17 +294,50 @@ export function ConsoleView({ mode, flowId, variantId, onFlowChange, onVariantCh
             />
           )}
 
+          {/* The exchange, once it has happened. A separate endpoint, so it is drawn apart from the
+              transcript above rather than appended to it. */}
+          {exchanged.map((result, i) => (
+            <ExchangeCard
+              key={`token-${i}`}
+              index={sent.length + i}
+              title={i === 0 ? 'Exchange the code for tokens' : 'Redeem it again'}
+              result={result}
+              domain={tenant?.domain}
+              jira={jira}
+            />
+          ))}
+
           {done && (
             <div className="flex items-start gap-3 rounded-lg border bg-muted/30 px-4 py-4 text-sm">
               {last.body.authorization_code ? (
                 <>
                   <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[hsl(var(--ok))]" />
-                  <p className="text-muted-foreground">
-                    Done — an authorization code was issued. Exchange it at{' '}
-                    <code className="font-mono text-foreground">POST /oauth/token</code> with the
-                    standard <code className="font-mono text-foreground">authorization_code</code>{' '}
-                    grant. No new grant type was introduced.
-                  </p>
+                  <div className="space-y-3">
+                    <p className="text-muted-foreground">
+                      An authorization code was issued. It is redeemed at{' '}
+                      <code className="font-mono text-foreground">POST /oauth/token</code> with the
+                      standard <code className="font-mono text-foreground">authorization_code</code>{' '}
+                      grant — a different endpoint, and an ordinary one. No new grant type was
+                      introduced, which is the strongest evidence that{' '}
+                      <code className="font-mono text-foreground">/e/authorize</code> replaced one leg
+                      of the flow and left the rest alone.
+                    </p>
+                    {transport.current?.exchange ? (
+                      <Button size="sm" variant="outline" onClick={redeem} disabled={busy}>
+                        {exchanged.length === 0 ? 'Exchange for tokens' : 'Redeem it again'}
+                      </Button>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        This is a recording, so there is no session to redeem against — the code in it
+                        was issued to somebody else.
+                      </p>
+                    )}
+                    {exchanged.length === 1 && (
+                      <p className="text-xs text-muted-foreground">
+                        Redeem it a second time to see what a replayed code gets.
+                      </p>
+                    )}
+                  </div>
                 </>
               ) : (
                 <>

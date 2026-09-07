@@ -88,8 +88,10 @@ export function freshState({
     consumedSessions: [],
     // PKCE challenge from the initiate call. Without it no request_uri may be returned.
     codeChallenge: null,
+    scope: null,
     next: [],
     authorizationCode: null,
+    codeRedeemed: false,
     terminated: null,
     history: [],
   };
@@ -753,6 +755,7 @@ export function initiate(state, payload = {}) {
     };
   }
   state.codeChallenge = String(payload.code_challenge);
+  if (payload.scope) state.scope = String(payload.scope);
 
   const { offered, withheld } = negotiate(state);
 
@@ -2147,5 +2150,103 @@ export function sessionPayload(state) {
     jti: `spec-jti-${state.rotations}`,
     iat: '<issued at>',
     exp: '<+15 min>',
+  };
+}
+
+/* ── the token exchange ───────────────────────────────────────────────────
+   A different endpoint, and deliberately an ordinary one. The whole argument for this design is
+   that /e/authorize replaces the browser leg of an authorization code flow and NOTHING ELSE: the
+   thing it hands back is a standard authorization_code, redeemed at the standard endpoint with the
+   standard grant. No new grant type, no new token endpoint, no bespoke exchange. A client that
+   already speaks OAuth changes how it gets the code and not what it does with it.
+
+   Modelled properly rather than mimed, because the two failure modes are the interesting part:
+   a code is single-use, and PKCE is verified here — the only place it can be. */
+
+export const TOKEN_PATH = '/oauth/token';
+
+/** RFC 7636 Appendix B. The seed's code_challenge really is the S256 of this. */
+export const SPEC_CODE_VERIFIER = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
+
+const base64url = (buf) =>
+  btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+async function s256(verifier) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  return base64url(digest);
+}
+
+const tokenError = (error, description) => ({
+  status: 400,
+  body: { error, error_description: description },
+});
+
+/**
+ * POST /oauth/token. Async because verifying PKCE means hashing, and the console runs in a browser.
+ * @returns {Promise<{status:number, body:object, note?:string}>}
+ */
+export async function exchangeCode(state, payload = {}) {
+  if (payload.grant_type !== 'authorization_code') {
+    return tokenError(
+      'unsupported_grant_type',
+      `"${payload.grant_type ?? '(absent)'}" — this endpoint takes the ordinary authorization_code ` +
+        'grant. Embedded Authorize introduces no grant type of its own; that is the point of it.'
+    );
+  }
+
+  if (!payload.code) return tokenError('invalid_request', 'Missing "code".');
+
+  if (payload.code !== state.authorizationCode) {
+    return tokenError('invalid_grant', 'That code was not issued by this transaction.');
+  }
+
+  /* Single use. Worth demonstrating rather than asserting: a code that survived redemption would
+     let anyone who observed it mint a second set of tokens. */
+  if (state.codeRedeemed) {
+    const res = tokenError('invalid_grant', 'This code has already been redeemed.');
+    res.note =
+      'Codes are single-use. The first exchange consumed it, and a replay is refused — which is ' +
+      'what stops an intercepted code being worth anything after the client has used it.';
+    return res;
+  }
+
+  if (state.codeChallenge) {
+    if (!payload.code_verifier) {
+      const res = tokenError('invalid_grant', 'Missing "code_verifier". A challenge was sent, so a verifier is required.');
+      res.note =
+        'This is the only place PKCE is ever checked. The challenge went out on the initiate; the ' +
+        'verifier proves the client redeeming the code is the one that started the flow.';
+      return res;
+    }
+
+    if ((await s256(payload.code_verifier)) !== state.codeChallenge) {
+      const res = tokenError('invalid_grant', 'The code_verifier does not match the code_challenge.');
+      res.note =
+        `Spec mode sent code_challenge ${state.codeChallenge}, which is the S256 of ` +
+        `${SPEC_CODE_VERIFIER} — RFC 7636's own example. Anything else fails here, which is exactly ` +
+        'what an intercepted code runs into: the attacker has the code and not the verifier.';
+      return res;
+    }
+  }
+
+  state.codeRedeemed = true;
+
+  const scope = state.scope || 'openid profile email';
+  const body = {
+    access_token: 'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.<access>.<sig>',
+    id_token: 'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.<id>.<sig>',
+    token_type: 'Bearer',
+    expires_in: 86400,
+    scope,
+    ...(scope.includes('offline_access') ? { refresh_token: 'v1.<refresh>' } : {}),
+  };
+
+  return {
+    status: 200,
+    body,
+    note:
+      'An ordinary token response from an ordinary grant. Nothing about it records that the code ' +
+      'was obtained without a browser — which is the strongest evidence that /e/authorize replaced ' +
+      'one leg of the flow and left the rest alone.',
   };
 }
