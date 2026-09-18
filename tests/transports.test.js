@@ -47,14 +47,33 @@ test('all 26 documented happy paths replay exactly', async () => {
   assert.equal(calls, 200);
 });
 
-test('seedFor prefills the next documented request', async () => {
+test('seedFor prefills the next documented request, plus the client_id it now needs', async () => {
   const scenario = SIGNUP_SCENARIOS.find((s) => s.number === 8);
   const happyPath = scenario.happyPaths.find((h) => h.number === 3);
   const t = cannedTransport({ scenario, happyPath });
 
-  assert.deepEqual(t.seedFor(), happyPath.exchanges[0].request.body);
+  /* The PRD was recorded before client_id was required on every call, so the seed is the
+     documented body plus that one field. Everything else must still match the document exactly —
+     that is what spec mode promises — so this asserts the addition and nothing but it. */
+  const withClientId = (body) => ({ client_id: '<client_id>', ...structuredClone(body) });
+
+  assert.deepEqual(t.seedFor(), withClientId(happyPath.exchanges[0].request.body));
   await t.start();
-  assert.deepEqual(t.seedFor(), happyPath.exchanges[1].request.body);
+  assert.deepEqual(t.seedFor(), withClientId(happyPath.exchanges[1].request.body));
+});
+
+test('the recording itself is left alone — only the seed gains client_id', () => {
+  // Rewriting the extracted PRD would make the console disagree with the document it cites.
+  for (const scenario of SIGNUP_SCENARIOS) {
+    for (const happyPath of scenario.happyPaths) {
+      for (const ex of happyPath.exchanges) {
+        assert.ok(
+          !('client_id' in ex.request.body) || ex.request.body.client_id,
+          `${happyPath.id} recording must not be rewritten`
+        );
+      }
+    }
+  }
 });
 
 test('an edited value is sent and reflected back in the masked identifier', async () => {

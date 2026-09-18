@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import {
   freshState,
   initiate,
-  submit,
+  submit as submitRaw,
   sessionPayload,
   exchangeCode,
   MAX_OTP_ATTEMPTS,
@@ -40,10 +40,22 @@ const preset = (id) => CONNECTION_PRESETS.find((c) => c.id === id);
 /** PKCE is mandatory, so every helper sends it — as any real client would. */
 const PKCE = { code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM', code_challenge_method: 'S256' };
 
+export const CLIENT_ID = '<client_id>';
+
+/**
+ * `submit` with the client_id every request now carries.
+ *
+ * Threading it through one helper rather than restating it at 139 call sites keeps those tests
+ * about what they were already about. The refusals it exists to enforce are not smuggled past by
+ * this — they are tested against `submitRaw` directly, under "client_id on every call" below.
+ */
+const submit = (state, action, payload = {}) =>
+  submitRaw(state, action, { client_id: state.clientId ?? CLIENT_ID, ...payload });
+
 /** `payload` merges into the initiate body; everything else configures the session. */
 const start = (connectionId, caps, { payload = {}, ...opts } = {}) => {
   const state = freshState({ connection: preset(connectionId), declaredCaps: caps, ...opts });
-  const first = initiate(state, { ...PKCE, ...payload });
+  const first = initiate(state, { client_id: CLIENT_ID, ...PKCE, ...payload });
   return { state, first };
 };
 
@@ -143,7 +155,7 @@ test('initiate without PKCE is refused', () => {
   // Mandatory, so the draft's "no request_uri without a code_challenge" rule is now unreachable:
   // there is no such request to answer.
   const state = freshState({ connection: preset('enterprise-saml'), declaredCaps: ['authn:federated:v1'] });
-  const res = initiate(state, {});
+  const res = initiate(state, { client_id: CLIENT_ID });
 
   assert.equal(res.status, 400);
   assert.equal(res.body.error, 'invalid_request');
@@ -154,7 +166,7 @@ test('initiate without PKCE is refused', () => {
 
 test('only S256 is accepted', () => {
   const state = freshState({ connection: preset('enterprise-saml'), declaredCaps: ['authn:federated:v1'] });
-  const res = initiate(state, { code_challenge: 'abc', code_challenge_method: 'plain' });
+  const res = initiate(state, { client_id: CLIENT_ID, code_challenge: 'abc', code_challenge_method: 'plain' });
 
   assert.equal(res.status, 400);
   assert.match(res.body.error_description, /S256/);
@@ -165,7 +177,7 @@ test('only S256 is accepted', () => {
 test('a request_uri is still withheld if a challenge somehow never reached the session', () => {
   // A backstop rather than a path — the refusal above means this cannot be produced by a request.
   const state = freshState({ connection: preset('enterprise-saml'), declaredCaps: ['authn:federated:v1'] });
-  initiate(state, { ...PKCE });
+  initiate(state, { client_id: CLIENT_ID, ...PKCE });
   state.codeChallenge = null;
 
   const res = submit(state, 'authn:federated:company-saml:v1', { simulate: 'abandoned' });
@@ -1564,4 +1576,93 @@ test('no grant type of its own was introduced', async () => {
   const res = await redeem(toCode(), { grant_type: 'urn:ietf:params:oauth:grant-type:embedded' });
   assert.equal(res.body.error, 'unsupported_grant_type');
   assert.match(res.body.error_description, /introduces no grant type of its own/);
+});
+
+
+/* ── client_id on every call ────────────────────────────────────────────── */
+
+test('client_id is required on the opening call', () => {
+  const state = freshState({ connection: preset('db-email-otp'), declaredCaps: ['action:identify:email:v1'] });
+  const res = initiate(state, { ...PKCE }); // deliberately without one
+
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error, 'invalid_request');
+  assert.match(res.body.error_description, /client_id/);
+});
+
+test('client_id is required on every call after it, not just the first', () => {
+  // The change this suite is pinning. A continuation used to need only auth_session and action.
+  const { state } = start('db-email-otp', ['action:identify:email:v1', 'action:challenge:email:v1']);
+  const res = submitRaw(state, 'action:identify:email:v1', { email: 'hazel.nutt@okta.com' });
+
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error, 'invalid_request');
+  assert.match(res.body.error_description, /client_id/);
+});
+
+test('a client_id that disagrees with the session is the generic invalid_grant', () => {
+  // Deliberately NOT a distinct code. A refusal that said "the session is fine, the client is
+  // wrong" would confirm the session decrypted — which is the one thing it must never do.
+  const { state } = start('db-email-otp', ['action:identify:email:v1', 'action:challenge:email:v1']);
+  const res = submitRaw(state, 'action:identify:email:v1', {
+    client_id: 'some-other-client',
+    email: 'hazel.nutt@okta.com',
+  });
+
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error, 'invalid_grant');
+  assert.equal(
+    res.body.error_description,
+    ERRORS.invalid_grant.http === 400 ? res.body.error_description : null
+  );
+  assert.doesNotMatch(res.body.error_description, /client_id/, 'must not say which half was wrong');
+});
+
+test('the mismatch is refused before the action is even considered', () => {
+  // Order matters: checking the allow-list first would leak whether the action was on it.
+  const { state } = start('db-email-otp', ['action:identify:email:v1']);
+  const res = submitRaw(state, 'action:verify:otp:v1', { client_id: 'other', otp: SPEC_OTP });
+
+  assert.equal(res.body.error, 'invalid_grant');
+});
+
+test('the sealed client_id is what the session inspector shows', () => {
+  const { state } = start(
+    'db-email-otp',
+    ['action:identify:email:v1', 'action:challenge:email:v1', 'action:verify:otp:v1'],
+    { payload: { client_id: 'aBc123RealClient' } }
+  );
+
+  // Not the '<client_id>' placeholder it used to hard-code — the inspector shows what the session
+  // was actually opened with, which is the value a continuation is checked against.
+  assert.equal(sessionPayload(state).auth_request_params.client_id, 'aBc123RealClient');
+});
+
+test('the exchange carries client_id too, and it must still match', async () => {
+  const state = toCode();
+
+  const missing = await exchangeCode(state, {
+    grant_type: 'authorization_code',
+    code: state.authorizationCode,
+    code_verifier: SPEC_CODE_VERIFIER,
+  });
+  assert.equal(missing.body.error, 'invalid_request');
+  assert.match(missing.body.error_description, /client_id/);
+
+  const wrong = await redeem(state, { client_id: 'some-other-client' });
+  assert.equal(wrong.body.error, 'invalid_grant');
+
+  const right = await redeem(state);
+  assert.ok(right.body.access_token, 'the matching client still redeems');
+});
+
+test('the endpoint reference says client_id is required on both shapes', () => {
+  for (const shape of ['initiate', 'continue']) {
+    const field = ENDPOINT[shape].find((f) => f.name === 'client_id');
+    assert.ok(field, `${shape} must list client_id`);
+    assert.equal(field.required, true, `${shape} client_id must be required`);
+  }
+  // The reason is the point: it is not how the server learns the client, it is what lets it
+  // answer CORS on a continuation. A reader who does not find that here will ask why.
+  assert.match(ENDPOINT.continue.find((f) => f.name === 'client_id').doc, /origin|CORS/i);
 });

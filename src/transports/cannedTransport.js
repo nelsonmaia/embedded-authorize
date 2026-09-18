@@ -45,7 +45,15 @@ export function cannedTransport({ scenario, happyPath }) {
      ordinary OAuth and identical in every mode — which is the claim being demonstrated — so it is
      modelled rather than replayed. Nothing tenant-specific is invented: the response shape is the
      one RFC 6749 defines, and the code is the recorded one. */
-  const tokenState = { authorizationCode: null, codeChallenge: null, codeRedeemed: false, scope: null };
+  const tokenState = {
+    authorizationCode: null,
+    codeChallenge: null,
+    codeRedeemed: false,
+    scope: null,
+    // The PRD's requests predate client_id being required on every call, so the recording carries
+    // no value to seal. The placeholder the seeds use is the one the exchange matches against.
+    clientId: '<client_id>',
+  };
 
   const at = (i) => happyPath.exchanges[i] ?? null;
 
@@ -132,10 +140,19 @@ export function cannedTransport({ scenario, happyPath }) {
       return r;
     },
 
-    /** The documented request for whichever call comes next, so the editor opens prefilled. */
+    /**
+     * The documented request for whichever call comes next, so the editor opens prefilled.
+     *
+     * Plus `client_id`, which the recording does not have. Every request carries it now, and the
+     * PRD was written before that was true — so the seed shows what a client would actually send
+     * today rather than reproducing a body a server would refuse. The RESPONSE is still the
+     * document's, byte for byte; nothing about the recording itself is rewritten.
+     */
     seedFor() {
       const ex = at(cursor);
-      return ex ? structuredClone(ex.request.body) : {};
+      if (!ex) return {};
+      const body = structuredClone(ex.request.body);
+      return 'client_id' in body ? body : { client_id: tokenState.clientId, ...body };
     },
 
     inspect() {

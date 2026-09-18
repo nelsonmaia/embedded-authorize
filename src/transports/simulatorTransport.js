@@ -49,7 +49,7 @@ function forDisplay(body) {
 export function tokenSeed(state) {
   return {
     grant_type: 'authorization_code',
-    client_id: '<client_id>',
+    client_id: state.clientId ?? '<client_id>',
     code: state.authorizationCode ?? '<authorization_code>',
     ...(state.codeChallenge ? { code_verifier: SPEC_CODE_VERIFIER } : {}),
   };
@@ -148,8 +148,17 @@ export function simulatorTransport({ scenario }) {
       const scripted = scenario.script?.[step];
       const simulate = scripted?.action === action ? scripted.payload?.simulate : undefined;
 
-      const sent = { auth_session: state.authSession, ...body };
-      const res = wrap(sent, submit(state, action, simulate ? { ...payload, simulate } : payload));
+      /* client_id is threaded the way auth_session already is: defaulted from the session the
+         flow is walking, and overridden by whatever the editor holds. Deleting the field from the
+         payload therefore puts it back rather than producing a request no real client would make
+         — but editing it to a DIFFERENT client is preserved, and the engine refuses that, which
+         is the case worth being able to try. */
+      const sent = { auth_session: state.authSession, client_id: state.clientId, ...body };
+      const { action: _action, ...payloadWithDefaults } = sent;
+      const res = wrap(
+        sent,
+        submit(state, action, simulate ? { ...payloadWithDefaults, simulate } : payloadWithDefaults)
+      );
       step += 1;
       return res;
     },
@@ -171,7 +180,11 @@ export function simulatorTransport({ scenario }) {
      */
     seedFor(nextEntry) {
       const cap = byId(nextEntry.action);
-      const seed = { auth_session: state.authSession, action: nextEntry.action };
+      const seed = {
+        auth_session: state.authSession,
+        client_id: state.clientId ?? '<client_id>',
+        action: nextEntry.action,
+      };
 
       for (const f of cap?.request || []) {
         // `index` is carried by the next[] entry itself; echo it rather than inventing one.

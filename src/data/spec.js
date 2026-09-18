@@ -85,7 +85,14 @@ export const ENDPOINT = {
 
   /** The opening call. No auth_session yet — this is what creates one. */
   initiate: [
-    { name: 'client_id', required: true, doc: 'The public client. No secret: these are public clients by definition.' },
+    {
+      name: 'client_id',
+      required: true,
+      doc:
+        'The public client. No secret: these are public clients by definition. Required here AND ' +
+        'on every call that follows — see the continuation table for why the session sealing it ' +
+        'is not enough.',
+    },
     {
       name: 'connection',
       required: false,
@@ -133,6 +140,19 @@ export const ENDPOINT = {
 
   /** Every subsequent call. */
   continue: [
+    {
+      name: 'client_id',
+      required: true,
+      doc:
+        'The same client that opened the session, repeated on EVERY call rather than only the ' +
+        'first. The session already seals it, so this is not how the server learns which client ' +
+        'is calling — it is what lets the server resolve that client\'s own allowed origins ' +
+        'BEFORE it decrypts anything, which is what makes a CORS answer possible on a ' +
+        'continuation. Without it the origin allow-list is unreachable until the session opens, ' +
+        'and a browser gates on headers that arrive too late to matter. A value that disagrees ' +
+        'with the sealed one is invalid_grant — deliberately the same generic refusal as a bad ' +
+        'session, so it never confirms the session otherwise decrypted fine.',
+    },
     {
       name: 'auth_session',
       required: true,
@@ -941,6 +961,28 @@ export const CONNECTION_PRESETS = [
    ──────────────────────────────────────────────────────────────────────────── */
 
 export const DECISIONS = [
+  {
+    title: 'client_id is sent on every call, not just the first',
+    basis: 'ours',
+    conflict:
+      'Every document here — D2, D3, PWD, SIGNUP and the draft — shows the continuation body as ' +
+      'auth_session plus action plus the action\'s own fields. None of them carries client_id ' +
+      'past the opening call, because the session seals it and repeating it looks redundant.',
+    decision:
+      'client_id is required on every request to the endpoint, and on the token exchange. A ' +
+      'continuation whose client_id disagrees with the sealed one is refused with the generic ' +
+      'invalid_grant rather than a code of its own.',
+    why:
+      'CORS. The per-client allowed-origins list is the client\'s, so the server has to know ' +
+      'which client is calling before it can decide what Access-Control-Allow-Origin to answer ' +
+      'with — and on a continuation the only thing naming the client was inside the encrypted ' +
+      'session, which is opened too late and on a path that can fail. Putting client_id back on ' +
+      'the wire makes the origin decision available from the request line, which is what a ' +
+      'browser-side caller needs. The redundancy is the price, and it is small: the session ' +
+      'stays authoritative, and the body value is checked against it rather than trusted. The ' +
+      'local copies of the documents predate this and have not been updated.',
+    source: 'TEAM',
+  },
   {
     title: 'A paused leg resumes on the action it was offered under',
     basis: 'ours',

@@ -319,9 +319,14 @@ test('the spec engine keeps the challenge, so it would pass its own check', asyn
     connection: CONNECTION_PRESETS.find((c) => c.id === 'db-email-otp'),
     declaredCaps: caps,
   });
-  initiate(state, {});
-  submit(state, 'action:identify:email:v1', { email: 'hazel.nutt@okta.com' });
-  const challenged = submit(state, 'action:challenge:email:v1', {});
+  const CLIENT_ID = '<client_id>';
+  initiate(state, {
+    client_id: CLIENT_ID,
+    code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
+    code_challenge_method: 'S256',
+  });
+  submit(state, 'action:identify:email:v1', { client_id: CLIENT_ID, email: 'hazel.nutt@okta.com' });
+  const challenged = submit(state, 'action:challenge:email:v1', { client_id: CLIENT_ID });
 
   const findings = checkResponse({
     request: { body: { action: 'action:challenge:email:v1' } },

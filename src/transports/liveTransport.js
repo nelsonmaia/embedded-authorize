@@ -135,7 +135,13 @@ export function liveTransport({ tenant, capabilities }) {
 
     async send(body) {
       // auth_session is threaded from the live response unless the user pinned their own.
-      const sent = { auth_session: body.auth_session ?? authSession, ...body };
+      // client_id rides on every call now, so it is threaded like auth_session: defaulted from
+      // the tenant bar, overridden by whatever the payload actually holds.
+      const sent = {
+        auth_session: body.auth_session ?? authSession,
+        client_id: body.client_id ?? tenant.clientId.trim(),
+        ...body,
+      };
       return wrap(sent, await call('/e/authorize', sent));
     },
 
@@ -162,7 +168,11 @@ export function liveTransport({ tenant, capabilities }) {
 
     seedFor(nextEntry) {
       const cap = byId(nextEntry.action);
-      const seed = { auth_session: authSession, action: nextEntry.action };
+      const seed = {
+        auth_session: authSession,
+        client_id: tenant.clientId.trim(),
+        action: nextEntry.action,
+      };
       // Echo whatever the server itself put on the next[] entry — it is the authority here,
       // not the local capability registry.
       for (const k of ['index', 'delivery_method']) {

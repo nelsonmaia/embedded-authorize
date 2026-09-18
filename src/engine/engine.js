@@ -69,6 +69,10 @@ export function freshState({
     botDetection,
     // none | form | web — a post-login Action that needs a web leg before the code is issued.
     postLogin,
+    // Sealed by initiate and re-checked on every call after it — client_id is now on the wire
+    // every time, so the server can resolve this client's allowed origins without opening the
+    // session first. See DECISIONS in spec.js.
+    clientId: null,
     userIdentified: false,
     user: null,
     intent: 'login',
@@ -702,6 +706,20 @@ function hasUsableAuthMethod(state) {
 
 /** The initiate call. */
 export function initiate(state, payload = {}) {
+  /* Every request carries client_id, this one included. Checked first because it is the cheapest
+     thing to be wrong and the one the server needs before it can answer CORS at all. */
+  if (!payload.client_id) {
+    return {
+      status: 400,
+      body: { error: 'invalid_request', error_description: 'Missing "client_id".' },
+      note:
+        'client_id is required on every call to this endpoint, not only on the opening one. Here ' +
+        'it is what the session is sealed with; on every call after it, it is what lets the ' +
+        'server resolve this client\'s allowed origins before decrypting anything.',
+    };
+  }
+  state.clientId = String(payload.client_id);
+
   /* `connection` is deliberately NOT required, and the choice carries meaning.
 
      Naming one PINS the transaction: the server has nothing to discover, so `next` carries exactly
@@ -827,6 +845,41 @@ export function submit(state, action, payload = {}) {
 
   if (state.phase === 'complete' || state.phase === 'terminated') {
     return badRequest('The flow is over. Restart from initiate.');
+  }
+
+  /* client_id, on this call and every other one. It rides ahead of the allow-list and ahead of
+     the session check on purpose: the server has to be able to resolve this client's allowed
+     origins before it opens anything, which is the whole reason the field is back on the wire. */
+  if (!payload.client_id) {
+    return {
+      status: 400,
+      body: { error: 'invalid_request', error_description: 'Missing "client_id".' },
+      note:
+        'Every request to this endpoint carries client_id, continuations included. The session ' +
+        'already seals it, so this is not how the server learns who is calling — it is what lets ' +
+        'the origin allow-list be resolved from the request rather than from inside the ' +
+        'encrypted session, which opens too late for a browser to gate on.',
+      auth_session: state.authSession,
+      next: state.next,
+    };
+  }
+
+  /* A client_id that disagrees with the sealed one gets the SAME refusal a bad session gets.
+     Anything more specific — "the session is fine, the client is wrong" — would confirm that the
+     session decrypted, which is exactly what this must never tell a caller holding a stolen one. */
+  if (state.clientId && String(payload.client_id) !== state.clientId) {
+    return {
+      status: 400,
+      body: {
+        error: 'invalid_grant',
+        error_description: 'The provided auth_session is invalid, expired, revoked, or otherwise not acceptable.',
+      },
+      note:
+        'The body\'s client_id is not the one this session was opened with. The refusal is ' +
+        'deliberately the generic invalid_grant, with the same wording a tampered session gets: ' +
+        'a distinct code here would tell whoever presented the session that it decrypted fine, ' +
+        'which is a free oracle for a stolen one. Nothing is echoed back for the same reason.',
+    };
   }
 
   // Before anything else: is this session even ours? Checked ahead of the allow-list, because
@@ -2112,7 +2165,7 @@ export function sessionPayload(state) {
   if (!state.authSession) return null;
   return {
     auth_request_params: {
-      client_id: '<client_id>',
+      client_id: state.clientId ?? '<client_id>',
       connection: state.connection?.id,
       capabilities: state.declaredCaps,
     },
@@ -2192,6 +2245,15 @@ export async function exchangeCode(state, payload = {}) {
       `"${payload.grant_type ?? '(absent)'}" — this endpoint takes the ordinary authorization_code ` +
         'grant. Embedded Authorize introduces no grant type of its own; that is the point of it.'
     );
+  }
+
+  if (!payload.client_id) return tokenError('invalid_request', 'Missing "client_id".');
+
+  /* Same rule as the endpoint, and the same generic refusal: the code was issued to one client
+     and only that client may redeem it. RFC 6749 §4.1.3 requires this of a public client, so it
+     is the one piece of the change that was already ordinary OAuth rather than new. */
+  if (state.clientId && String(payload.client_id) !== state.clientId) {
+    return tokenError('invalid_grant', 'That code was not issued to this client.');
   }
 
   if (!payload.code) return tokenError('invalid_request', 'Missing "code".');
