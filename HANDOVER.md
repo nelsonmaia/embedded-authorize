@@ -46,8 +46,7 @@ moment you open live mode, and in the browser console, so nobody has to read an 
 this, and now satisfies the platform's image policy: both stages are on the pinned Chainguard Wolfi
 base and the runtime stage runs as `nonroot`. An earlier version used `node:22-alpine` and was
 rejected — the *runtime* stage is the one the policy checks, but pin the build stage too, since its
-output is copied forward. `PLAYGROUND_ALLOWED_HOSTS` must be set or the
-proxy forwards nothing by design.
+output is copied forward. Live mode needs no configuration: there is no tenant allowlist.
 
 If `/__health` *does* answer but `/__tenant` still 405s, the cause is the other one: a proxy in
 front is handling that path itself. It must forward `/__tenant`, `/__jira` and `/__health` through.
@@ -92,7 +91,6 @@ prevents. Two things to check the first time one succeeds:
 
 ```
 npm run build
-echo 'PLAYGROUND_ALLOWED_HOSTS=nelson.jp.auth0.com' > .env    # gitignored
 PORT=8080 node server.js
 ngrok http 8080 --domain=embedded-authorize-specs.ngrok.app   # a reserved domain
 ```
@@ -122,9 +120,9 @@ the deployment problem above, with a different cause.
   and reports the absence as a finding. This is not a bug in the console.
 - **`apply: 'serve'` on a Vite plugin means it does not exist in a build.** That is what caused
   blocker 1. Anything the deployed app calls must also be mounted in `server.js`.
-- **`forward()` runs in strict mode when deployed** — exact hosts only, no `*.auth0.com` default.
-  That asymmetry is deliberate; `scripts/tenant-proxy/forward.js` explains why, and there is a test
-  asserting the same call succeeds in dev and is refused deployed.
+- **`forward()` has no tenant allowlist, deployed or in dev.** Any tenant the user types is
+  forwarded; the deployed server differs only by a rate limit. `scripts/tenant-proxy/forward.js`
+  lists what still bounds it, and `tests/server.test.js` asserts each of those from both sides.
 - **Never put a Jira token in module state.** It was there once and meant the second visitor
   inherited the first visitor's account. `tests/jira-sessions.test.js` guards the regression.
 - **The dev-server files must not import from `src/`.** Tested. They are standalone so a refactor in

@@ -5,11 +5,12 @@
  * /__tenant used to reach a static file host, which answers anything that is not a GET with 405 —
  * an error about HTTP methods for what is actually a missing backend.
  *
- * The second matters more. The dev proxy is safe because it is bound to localhost and there is one
- * of you. The same code reachable by anyone becomes a relay they can point at any Auth0 tenant,
- * from your server's address. Strict mode is what stops that, so it is tested from both sides:
- * that a named tenant still works, and that an unnamed one is refused even though its host matches
- * the suffix the dev server would have accepted.
+ * The second is what now bounds the proxy. There is no tenant allowlist: any Auth0 tenant, on any
+ * domain, is reachable without configuration, because a console you have to edit an env var to
+ * point at your own tenant is not a console anyone else can use. What is left holding the line is
+ * tested here from both sides — the three paths, GET/POST only, no client_secret, and a `domain`
+ * that must be a routable public hostname rather than a URL or an address inside the network the
+ * server happens to sit in.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -41,95 +42,92 @@ const spyFetch = async (url) => {
 
 const envelope = (domain) => ({ domain, path: '/e/authorize', method: 'POST', body: {} });
 
-/* ── strict mode ────────────────────────────────────────────────────────── */
+/* ── any tenant, no configuration ───────────────────────────────────────── */
 
-test('a deployment with no allowlist forwards nothing, and says what to set', async () => {
-  const res = fakeRes();
-  await forward(envelope('nelson.jp.auth0.com'), res, { strict: true, allowedHosts: [], doFetch: spyFetch });
+test('any tenant is forwarded, with nothing configured', async () => {
+  // The point of the change. None of these share a suffix, and no allowlist is passed: a stranger
+  // opening the deployed console types their own tenant and it works.
+  for (const domain of [
+    'nelson.jp.auth0.com',
+    'someone-else.auth0.com',
+    'login.acme.example',
+    'tenant.au.auth0lab.com',
+  ]) {
+    reached.length = 0;
+    const res = fakeRes();
+    await forward(envelope(domain), res, { doFetch: spyFetch });
 
-  assert.equal(res.statusCode, 503);
-  assert.equal(res.payload.error, 'no_allowlist');
-  assert.match(res.payload.detail, /PLAYGROUND_ALLOWED_HOSTS/, 'an operator must learn the fix from the error');
+    assert.equal(res.payload.ok, true, domain);
+    assert.deepEqual(reached, [`https://${domain}/e/authorize`]);
+  }
 });
 
-test('a named tenant is forwarded', async () => {
-  reached.length = 0;
-  const res = fakeRes();
-  await forward(envelope('nelson.jp.auth0.com'), res, {
-    strict: true,
-    allowedHosts: ['nelson.jp.auth0.com'],
-    doFetch: spyFetch,
-  });
+test('a domain must be a hostname, not a URL or a fragment of one', async () => {
+  // hostOf strips a scheme, a path and a port, so the request cannot be redirected by what is
+  // typed. Whatever survives that has to still look like a public hostname, or nothing is sent.
+  for (const domain of ['', '   ', 'https://', 'not a host', 'tenant', 'under_score.example.com']) {
+    reached.length = 0;
+    const res = fakeRes();
+    await forward(envelope(domain), res, { doFetch: spyFetch });
 
-  assert.equal(res.payload.ok, true);
-  assert.deepEqual(reached, ['https://nelson.jp.auth0.com/e/authorize']);
+    assert.equal(res.statusCode, 400, JSON.stringify(domain));
+    assert.match(res.payload.error, /^(missing_domain|invalid_domain)$/, JSON.stringify(domain));
+    assert.equal(reached.length, 0, 'nothing may leave the server');
+  }
 });
 
-test('an unnamed tenant is refused even though the suffix would pass in dev', async () => {
-  // The whole point of strict mode. In dev this exact call succeeds; deployed it must not, or the
-  // console is a credential-stuffing relay with a friendly UI.
-  reached.length = 0;
-  const strict = fakeRes();
-  await forward(envelope('someone-else.auth0.com'), strict, {
-    strict: true,
-    allowedHosts: ['nelson.jp.auth0.com'],
-    doFetch: spyFetch,
-  });
+test('a URL in the domain field is reduced to its host, not followed', async () => {
+  for (const written of [
+    'https://nelson.jp.auth0.com/oauth/token?x=1',
+    'HTTPS://Nelson.JP.Auth0.com/',
+    'nelson.jp.auth0.com:8443',
+  ]) {
+    reached.length = 0;
+    const res = fakeRes();
+    await forward(envelope(written), res, { doFetch: spyFetch });
 
-  assert.equal(strict.statusCode, 403);
-  assert.equal(strict.payload.error, 'host_not_allowed');
-  assert.equal(reached.length, 0, 'nothing may leave the server');
-
-  const dev = fakeRes();
-  await forward(envelope('someone-else.auth0.com'), dev, { allowedHosts: [], doFetch: spyFetch });
-  assert.equal(dev.payload.ok, true, 'the dev server still accepts any tenant, which is the difference');
+    assert.equal(res.payload.ok, true, written);
+    assert.deepEqual(reached, ['https://nelson.jp.auth0.com/e/authorize'], written);
+  }
+  assert.equal(hostOf(''), '');
+  assert.equal(hostOf(undefined), '');
 });
 
-test('strict mode does not widen what a path or method may be', async () => {
-  const allowedHosts = ['nelson.jp.auth0.com'];
+test('the server will not be used to reach the network it sits in', async () => {
+  // No tenant lives at a loopback, private or link-local address, so refusing them costs nothing
+  // and keeps an open proxy from becoming a probe for the metadata service next door.
+  for (const domain of [
+    '127.0.0.1',
+    '10.0.0.5',
+    '192.168.1.1',
+    '172.16.9.9',
+    '169.254.169.254',
+    'localhost.localdomain',
+    'metadata.internal',
+    'printer.local',
+    '[::1]',
+  ]) {
+    reached.length = 0;
+    const res = fakeRes();
+    await forward(envelope(domain), res, { doFetch: spyFetch });
+
+    assert.equal(res.payload.error, 'invalid_domain', domain);
+    assert.equal(reached.length, 0, `nothing may leave the server for ${domain}`);
+  }
+});
+
+test('dropping the allowlist did not widen what a path or method may be', async () => {
   for (const [patch, error] of [
     [{ path: '/api/v2/users' }, 'path_not_allowed'],
     [{ method: 'DELETE' }, 'method_not_allowed'],
     [{ body: { client_secret: 'shh' } }, 'client_secret_rejected'],
   ]) {
+    reached.length = 0;
     const res = fakeRes();
-    await forward({ ...envelope('nelson.jp.auth0.com'), ...patch }, res, { strict: true, allowedHosts, doFetch: spyFetch });
+    await forward({ ...envelope('nelson.jp.auth0.com'), ...patch }, res, { doFetch: spyFetch });
     assert.equal(res.payload.error, error);
-  }
-});
-
-test('a tenant URL configures the allowlist as well as a bare hostname', async () => {
-  // The obvious way to fill in PLAYGROUND_ALLOWED_HOSTS is to paste the tenant URL. Normalising
-  // only the incoming domain would refuse every call while the value looked right in the error.
-  for (const written of [
-    'nelson.jp.auth0.com',
-    'https://nelson.jp.auth0.com',
-    'https://nelson.jp.auth0.com/',
-    'HTTPS://Nelson.JP.Auth0.com/',
-  ]) {
-    reached.length = 0;
-    const res = fakeRes();
-    await forward(envelope('nelson.jp.auth0.com'), res, { strict: true, allowedHosts: [written], doFetch: spyFetch });
-    assert.equal(res.payload.ok, true, `configured as ${written}`);
-    assert.deepEqual(reached, ['https://nelson.jp.auth0.com/e/authorize']);
-  }
-});
-
-test('normalising the allowlist does not make it looser', async () => {
-  // A host that merely contains the allowed one, or differs in domain, must still be refused.
-  for (const attacker of ['nelson.jp.auth0.com.evil.example', 'evil-nelson.jp.auth0.com']) {
-    reached.length = 0;
-    const res = fakeRes();
-    await forward(envelope(attacker), res, {
-      strict: true,
-      allowedHosts: ['https://nelson.jp.auth0.com/'],
-      doFetch: spyFetch,
-    });
-    assert.equal(res.payload.error, 'host_not_allowed', attacker);
     assert.equal(reached.length, 0);
   }
-  assert.equal(hostOf(''), '');
-  assert.equal(hostOf(undefined), '');
 });
 
 /* ── the server ─────────────────────────────────────────────────────────── */

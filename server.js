@@ -11,10 +11,10 @@
  *
  * Run it with:  node server.js        (PORT, default 8080)
  *
- * Before it will forward anything, set PLAYGROUND_ALLOWED_HOSTS to the exact tenant domains this
- * deployment may reach. It runs `forward` in strict mode, which does not honour the *.auth0.com
- * convenience default — see scripts/tenant-proxy/forward.js for why that matters once the host is
- * reachable by someone other than you.
+ * Nothing needs configuring for live mode: the proxy forwards to whatever tenant the person using
+ * the console types, so a stranger opening the deployed URL can point it at their own. What keeps
+ * "any tenant" from meaning "any request" is listed in scripts/tenant-proxy/forward.js; the one
+ * brake that lives here is the per-address rate limit below (TENANT_RATE_LIMIT, default 60/min).
  */
 
 import { createServer } from 'node:http';
@@ -184,7 +184,6 @@ export const createConsoleServer = () =>
       }
 
       return forward(envelope, res, {
-        strict: true, // exact hosts only — see the header
         // eslint-disable-next-line no-console
         log: (m) => console.log(m),
         // eslint-disable-next-line no-console
@@ -201,10 +200,6 @@ export const createConsoleServer = () =>
         ok: true,
         server: 'embedded-authorize',
         routes: ['/__tenant', '/__jira', '/__health'],
-        tenantsAllowed: (process.env.PLAYGROUND_ALLOWED_HOSTS || '')
-          .split(',')
-          .map((h) => h.trim())
-          .filter(Boolean).length,
         node: process.version,
         uptimeSeconds: Math.round(process.uptime()),
       });
@@ -232,14 +227,9 @@ export const createConsoleServer = () =>
    fight the dev server for one. */
 if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   createConsoleServer().listen(PORT, () => {
-    const allowed = (process.env.PLAYGROUND_ALLOWED_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean);
     // eslint-disable-next-line no-console
     console.log(`  console  listening on :${PORT}`);
     // eslint-disable-next-line no-console
-    console.log(
-      allowed.length
-        ? `  tenants  ${allowed.join(', ')}`
-        : '  tenants  none allowed — set PLAYGROUND_ALLOWED_HOSTS or live mode will not forward'
-    );
+    console.log(`  tenants  any, at ${MAX_PER_WINDOW} calls a minute per address`);
   });
 }

@@ -18,7 +18,7 @@ npm run dev            # → http://localhost:5177
 | Script | What it does |
 |---|---|
 | `npm run dev` | Dev server on :5177, including the tenant proxy |
-| `npm test` | 215 assertions: data fidelity, the state machine, transports, proxy allowlist + log hygiene |
+| `npm test` | 215 assertions: data fidelity, the state machine, transports, proxy guards + log hygiene |
 | `npm run build` | Production bundle into `dist/` |
 | `npm start` | Serve the build plus the tenant proxy (see **Deploying**) |
 | `npm run extract` | Regenerate `src/data/signupPrd.generated.json` from the committed source |
@@ -90,13 +90,15 @@ It is not `server.proxy`, which resolves its `target` at config load — the ten
 runtime. It registers `POST /__tenant` and does its own `fetch`.
 
 The Vite binding is `apply: 'serve'`, so it is absent from any build. A deployment mounts the same
-handler itself, under a stricter allowlist — see **Deploying** below.
+handler itself, under the same rules plus a rate limit — see **Deploying** below.
 
 Guarantees, all covered by `tests/dev-proxy.test.js` and `tests/server.test.js`:
 
-- Host allowlist: `.auth0.com`, `.auth0lab.com`, `.authok.cn`, plus exact-match additions via
-  `PLAYGROUND_ALLOWED_HOSTS`. A URL smuggled through `domain` cannot redirect the request — the
-  upstream URL is rebuilt from validated parts.
+- **No tenant allowlist.** Any tenant the user types is forwarded, with nothing to configure. The
+  `domain` must still be a routable public hostname — a URL smuggled through it cannot redirect the
+  request, since the upstream URL is rebuilt from validated parts, and IP literals and `.local`,
+  `.internal`, `.localdomain`, `.home.arpa`, `.localhost` names are refused so the proxy cannot be
+  turned around on the network it sits in.
 - Path allowlist: `/e/authorize`, `/e/discovery`, `/oauth/token`. GET and POST only.
 - **Public clients only.** No `client_secret` field exists in the UI, and the middleware rejects a
   payload containing one with a 400.
@@ -119,10 +121,10 @@ because those need opposite fixes.
 
 ```
 npm run build
-PLAYGROUND_ALLOWED_HOSTS=your-tenant.auth0.com node server.js     # PORT, default 8080
+node server.js                                                    # PORT, default 8080
 ```
 
-or `docker build -t console . && docker run -p 8080:8080 -e PLAYGROUND_ALLOWED_HOSTS=… console`.
+or `docker build -t console . && docker run -p 8080:8080 console`.
 Both Dockerfile stages sit on a pinned Chainguard Wolfi base and the runtime stage runs as
 `nonroot`. The build stage is pinned too, not just the runtime one: it produces the artifacts the
 runtime stage copies, so it is part of the same supply chain.
@@ -135,13 +137,14 @@ path they appear, and honours `PUBLIC_URL`/`BASE_PATH` for static files. Getting
 invisible in a bad way: an unmatched `/__tenant` falls through to the SPA and returns `index.html`,
 which the console reports as "no server" while looking straight at one.
 
-**`PLAYGROUND_ALLOWED_HOSTS` is required, and the server forwards nothing without it.** That is
-deliberate. The dev proxy accepts any `*.auth0.com` host, which is safe on localhost where there is
-one of you; the same rule on a reachable host makes it a relay anyone can point at any tenant, from
-your server's address and under your server's reputation — credential-stuffing infrastructure with
-a friendly UI. So `server.js` runs `forward()` in strict mode, where the suffix defaults do not
-apply: exact tenant hosts, named by the operator, or nothing. It also rate limits per address
-(`TENANT_RATE_LIMIT`, default 60/minute), which the dev proxy has no need to.
+**There is nothing to allowlist, and that is a deliberate trade.** A console that only reaches the
+tenants its operator remembered to name is useless to everyone else, so a deployment forwards to
+whatever tenant the person using it types. The cost is real and worth stating plainly: a reachable
+host is a relay anyone can point at any tenant, from your server's address and under your server's
+reputation. What is left holding the line is the three-path allowlist, GET/POST only, the
+`client_secret` refusal, the routable-public-host check, and a per-address rate limit
+(`TENANT_RATE_LIMIT`, default 60/minute) which the dev proxy has no need to. If you are deploying
+somewhere that cannot afford that, put an authenticating proxy in front of `/__tenant`.
 
 Everything else the proxy enforces is unchanged and shared: the path allowlist, GET/POST only, the
 `client_secret` refusal, and never logging a body.
@@ -162,7 +165,6 @@ silently on the dev server alone. Copy `.env.example` to `.env` to start; `.env`
 
 | | |
 |---|---|
-| `PLAYGROUND_ALLOWED_HOSTS` | The **Auth0 tenant** hosts the proxy may reach, comma separated — not this app's own URL. A full URL is reduced to its hostname. **Required to deploy**; optional in dev. |
 | `TENANT_RATE_LIMIT` | Tenant calls per minute per address. Deployment only, default 60. |
 | `PORT` | For `node server.js`, default 8080. The dev server is always :5177. |
 

@@ -1,5 +1,5 @@
 /**
- * The dev-server tenant proxy: allowlist enforcement, and — the one that matters — proof that no
+ * The dev-server tenant proxy: what it will and will not forward, and — the one that matters — proof that no
  * secret ever reaches a log line. Driven as a plain function with an injected fetch and logger,
  * so there is no server and no network.
  */
@@ -31,7 +31,7 @@ const okFetch = (body = { error: 'insufficient_authorization', auth_session: 'x'
     headers: { get: (h) => (h === 'content-type' ? 'application/json' : null) },
   });
 
-test('forwards to an allowlisted host and returns the upstream envelope', async () => {
+test('forwards to a tenant host and returns the upstream envelope', async () => {
   const res = fakeRes();
   let calledUrl = null;
   await forward(
@@ -59,16 +59,28 @@ test('forwards to an allowlisted host and returns the upstream envelope', async 
   assert.equal(res2.payload.status, 403);
 });
 
-test('rejects a host outside the allowlist', async () => {
+test('forwards a host that no longer has to be on a list', async () => {
+  const res = fakeRes();
+  let calledUrl = null;
+  await forward(
+    { domain: 'login.acme.example', path: '/e/authorize', body: {} },
+    res,
+    { doFetch: async (url) => { calledUrl = url; return okFetch()(); } }
+  );
+  assert.equal(res.payload.ok, true);
+  assert.equal(calledUrl, 'https://login.acme.example/e/authorize');
+});
+
+test('refuses a domain that is not a routable public hostname', async () => {
   const res = fakeRes();
   let fetched = false;
   await forward(
-    { domain: 'evil.example.com', path: '/e/authorize', body: {} },
+    { domain: '169.254.169.254', path: '/e/authorize', body: {} },
     res,
     { doFetch: async () => { fetched = true; return okFetch()(); } }
   );
-  assert.equal(res.statusCode, 403);
-  assert.equal(res.payload.error, 'host_not_allowed');
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.payload.error, 'invalid_domain');
   assert.equal(fetched, false, 'must not have made the request at all');
 });
 

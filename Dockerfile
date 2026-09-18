@@ -5,10 +5,10 @@
 # supply chain. This is the digest the platform's auto-repair rebases onto, pinned here explicitly
 # so the image that ships is the image described in this file.
 #
-# Nothing here needs a secret. The one thing to set is PLAYGROUND_ALLOWED_HOSTS — the exact tenant
-# domains this deployment may reach — because the server runs the proxy in strict mode and will
-# forward nothing until it is told what is allowed. See scripts/tenant-proxy/forward.js for why a
-# *.auth0.com suffix allowlist is not safe once the host is reachable by more than one person.
+# Nothing here needs a secret, and nothing needs configuring for live mode: there is no tenant
+# allowlist, so the proxy forwards to whatever tenant the person using the console types. See
+# scripts/tenant-proxy/forward.js for what does still bound it, and the README's Deploying section
+# for the trade that represents once the host is reachable by more than one person.
 #
 # The Jira connection needs nothing: it registers its own OAuth client and holds a token per
 # browser session, so there is no secret to inject and no state to persist.

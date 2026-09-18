@@ -6,19 +6,23 @@
  * does the same thing, and it is shared verbatim by the Vite dev middleware and the deployed
  * server so that what you test locally is what runs when it is deployed.
  *
- * Two very different threat models use this one function, which is what `strict` is for.
+ * There is no tenant allowlist. A console that only reaches the tenants its operator remembered to
+ * name is useless to everyone else, so the deployed server forwards to whatever tenant the person
+ * using it types — the same behaviour as the dev server, deliberately, rather than by omission.
  *
- *   dev      bound to localhost, one developer, their own machine. Any Auth0 tenant is fine.
- *   deployed reachable by anyone who can reach the host. An allowlist of host SUFFIXES would make
- *            it a relay anyone could point at any tenant, from your server's IP and under your
- *            server's reputation — credential-stuffing infrastructure with a friendly UI. So
- *            strict mode drops the suffix defaults entirely: exact hosts only, named by the
- *            operator, and no allowlist means no forwarding at all.
+ * What still bounds it, because "any tenant" must not become "any request":
+ *
+ *   paths    three, exactly: /e/authorize, /e/discovery, /oauth/token. Not the Management API.
+ *   methods  GET and POST.
+ *   secrets  a client_secret in the body is refused outright; this drives public clients.
+ *   domain   a routable public hostname. Never a URL — the request URL is rebuilt from validated
+ *            parts — and never an address inside whatever network the server sits in, so an open
+ *            proxy cannot be turned into a probe for the metadata service next door.
+ *   rate     the deployed server caps calls per address; see server.js.
  *
  * Deliberately standalone: this file must not import from src/.
  */
 
-const DEFAULT_HOST_SUFFIXES = ['.auth0.com', '.auth0lab.com', '.authok.cn'];
 const ALLOWED_PATHS = ['/e/authorize', '/e/discovery', '/oauth/token'];
 const HOSTNAME_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
 const UPSTREAM_TIMEOUT_MS = 15000;
@@ -36,9 +40,9 @@ const PASS_HEADERS = [
 /**
  * A bare hostname, from whatever was written.
  *
- * Applied to BOTH sides of the comparison. The obvious way to configure an allowlist is to paste
- * the tenant URL, and if only the incoming domain were normalised, `https://tenant.auth0.com/`
- * would refuse every call while looking exactly right in the error message.
+ * The obvious way to name a tenant is to paste its URL, so a scheme, a path and a port are all
+ * stripped rather than refused. This is also what stops the domain field from redirecting the
+ * request: whatever is typed, only the host survives to reach the URL builder.
  */
 export const hostOf = (value) =>
   String(value ?? '')
@@ -48,18 +52,17 @@ export const hostOf = (value) =>
     .replace(/\/.*$/, '')
     .replace(/:\d+$/, '');
 
-function extraHosts() {
-  return (process.env.PLAYGROUND_ALLOWED_HOSTS || '').split(',').map(hostOf).filter(Boolean);
-}
+/* Not a tenant allowlist — a check that the host is somewhere on the public internet.
+   No Auth0 tenant is an IP literal or sits under .local/.internal, so refusing them costs a real
+   user nothing, while leaving them in would make this a way to reach 169.254.169.254 and every
+   private address the server can route to. Delete PRIVATE_SUFFIXES and IPV4_LITERAL to lift it. */
+const IPV4_LITERAL = /^\d{1,3}(\.\d{1,3}){3}$/;
+const PRIVATE_SUFFIXES = ['.local', '.internal', '.localdomain', '.home.arpa', '.localhost'];
 
-function hostAllowed(host, { strict, allowedHosts }) {
-  if (!HOSTNAME_RE.test(host)) return false;
-  const named = (allowedHosts ?? extraHosts()).map(hostOf).filter(Boolean);
-  // Exact match only, in either mode — a wildcard built from user input is how open relays happen.
-  if (named.includes(host)) return true;
-  // The convenience defaults are a dev affordance. A deployment names its tenants or forwards
-  // nothing; see the header for why a suffix allowlist is not safe once others can reach the host.
-  return strict ? false : DEFAULT_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix));
+function routablePublicHost(host) {
+  if (!HOSTNAME_RE.test(host)) return false; // also rejects a dotless name such as `localhost`
+  if (IPV4_LITERAL.test(host)) return false;
+  return !PRIVATE_SUFFIXES.some((suffix) => host.endsWith(suffix));
 }
 
 export function readBody(req) {
@@ -89,7 +92,7 @@ export function send(res, status, payload) {
 export async function forward(
   envelope,
   res,
-  { log = () => {}, warn = () => {}, doFetch = fetch, strict = false, allowedHosts } = {}
+  { log = () => {}, warn = () => {}, doFetch = fetch } = {}
 ) {
   if (!envelope || typeof envelope !== 'object') {
     return send(res, 400, { ok: false, error: 'invalid_body', detail: 'Expected a JSON object.' });
@@ -113,29 +116,13 @@ export async function forward(
 
   if (!host) return send(res, 400, { ok: false, error: 'missing_domain' });
 
-  const named = (allowedHosts ?? extraHosts()).map(hostOf).filter(Boolean);
-
-  /* A strict deployment with nothing named forwards nothing. Failing closed with an explanation
-     beats quietly relaying to whatever was typed, and tells the operator exactly what to set. */
-  if (strict && !named.length) {
-    return send(res, 503, {
+  if (!routablePublicHost(host)) {
+    return send(res, 400, {
       ok: false,
-      error: 'no_allowlist',
+      error: 'invalid_domain',
       detail:
-        'This deployment has no tenant allowlist, so it will not forward anything. Set ' +
-        'PLAYGROUND_ALLOWED_HOSTS to a comma-separated list of the exact tenant domains it may ' +
-        'reach. Live mode works without this only on a local dev server.',
-    });
-  }
-
-  if (!hostAllowed(host, { strict, allowedHosts })) {
-    return send(res, 403, {
-      ok: false,
-      error: 'host_not_allowed',
-      detail: strict
-        ? `"${host}" is not in this deployment's tenant allowlist. Allowed: ${named.join(', ')}.`
-        : `"${host}" is not allowed. Allowed suffixes: ${DEFAULT_HOST_SUFFIXES.join(', ')}. ` +
-          'Add a custom domain with the PLAYGROUND_ALLOWED_HOSTS env var.',
+        `"${host}" is not a tenant domain this can reach. Give the hostname of an Auth0 tenant — ` +
+        'for example `your-tenant.auth0.com`, or your own custom login domain.',
     });
   }
 

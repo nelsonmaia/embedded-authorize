@@ -8,8 +8,8 @@
  * typed by the user at runtime. A middleware doing its own `fetch` is simpler and easier to lock
  * down.
  *
- * `apply: 'serve'` — this binding is dev only. The deployed server mounts the same handler itself,
- * under a strict allowlist, which is a decision rather than an accident.
+ * `apply: 'serve'` — this binding is dev only. The deployed server mounts the same handler under
+ * the same rules, plus a rate limit, so dev and production differ in reach rather than in policy.
  *
  * Contract:  POST /__tenant   { domain, path, method, body, contentType? }
  *            → { ok: true, status, headers, body, durationMs } | { ok: false, error, detail }
