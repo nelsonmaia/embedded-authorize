@@ -256,7 +256,10 @@ export const CAPABILITIES = [
     label: 'Verify — OTP code',
     status: 'live',
     source: 'D2',
-    request: [{ name: 'otp', example: '032252', required: true }],
+    request: [
+      { name: 'otp', example: '032252', required: true },
+      { name: 'type', example: 'oob', required: false },
+    ],
     emits: [
       { name: 'channel', value: 'email' },
       { name: 'identifier', value: '<masked>' },
@@ -291,7 +294,10 @@ export const CAPABILITIES = [
     label: 'Verify — TOTP',
     status: 'spec',
     source: 'D3',
-    request: [{ name: 'otp', example: '032252', required: true }],
+    request: [
+      { name: 'otp', example: '032252', required: true },
+      { name: 'type', example: 'oob', required: false },
+    ],
     emits: [],
     doc:
       'One step, because there is nothing to challenge. A challenge action earns its place when ' +

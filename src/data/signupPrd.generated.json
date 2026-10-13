@@ -7,7 +7,7 @@
     "sourceVersion": 12,
     "sourceUpdatedAt": "2026-09-01T11:48:29.030Z",
     "docStatus": "DRAFT",
-    "sourceSha256": "fda634be0495950407150427ec7c98fa76edff4e7f7fa8cccde6d57922f6503b",
+    "sourceSha256": "7471c7e5545cf8ecab7f2c8e8dc282d816b835b2dc8d62bec6cd635e96bd6a83",
     "generatedBy": "scripts/extract-signup-prd.mjs",
     "statusDerived": true,
     "statusDerivation": "The PRD prints response bodies with no status line. authorization_code present → 200; error: insufficient_authorization → 403. Statuses here are inferred, not quoted.",
@@ -339,7 +339,8 @@
                 "body": {
                   "auth_session": "sess_4",
                   "action": "action:verify:otp:v1",
-                  "otp": "123456"
+                  "otp": "123456",
+                  "type": "oob"
                 }
               },
               "response": {
@@ -365,7 +366,7 @@
               "sessionIn": "sess_4",
               "sessionOut": "sess_5",
               "raw": {
-                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\"\n}",
+                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\",\n  \"type\": \"oob\"\n}",
                 "response": "{\n  \"error\": \"insufficient_authorization\",\n  \"auth_session\": \"sess_5\",\n  \"next\": [\n    { \"action\": \"action:signup:confirm:v1\" }\n  ]\n}"
               }
             },
@@ -629,7 +630,8 @@
                 "body": {
                   "auth_session": "sess_4",
                   "action": "action:verify:otp:v1",
-                  "otp": "123456"
+                  "otp": "123456",
+                  "type": "oob"
                 }
               },
               "response": {
@@ -667,7 +669,7 @@
               "sessionIn": "sess_4",
               "sessionOut": "sess_5",
               "raw": {
-                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\"\n}",
+                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\",\n  \"type\": \"oob\"\n}",
                 "response": "{\n  \"error\": \"insufficient_authorization\",\n  \"auth_session\": \"sess_5\",\n  \"next\": [\n    { \"action\": \"action:enroll:password:v1\", \"optional\": true, \"complexity\": { \"min_length\": 8, \"character_types\": [\"lowercase\", \"number\"] } },\n    { \"action\": \"action:signup:confirm:v1\" }\n  ]\n}"
               }
             },
@@ -901,7 +903,8 @@
                 "body": {
                   "auth_session": "sess_4",
                   "action": "action:verify:otp:v1",
-                  "otp": "123456"
+                  "otp": "123456",
+                  "type": "oob"
                 }
               },
               "response": {
@@ -939,7 +942,7 @@
               "sessionIn": "sess_4",
               "sessionOut": "sess_5",
               "raw": {
-                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\"\n}",
+                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\",\n  \"type\": \"oob\"\n}",
                 "response": "{\n  \"error\": \"insufficient_authorization\",\n  \"auth_session\": \"sess_5\",\n  \"next\": [\n    { \"action\": \"action:enroll:password:v1\", \"optional\": true, \"complexity\": { \"min_length\": 8, \"character_types\": [\"lowercase\", \"number\"] } },\n    { \"action\": \"action:signup:confirm:v1\" }\n  ]\n}"
               }
             },
@@ -1244,7 +1247,8 @@
                 "body": {
                   "auth_session": "sess_4",
                   "action": "action:verify:otp:v1",
-                  "otp": "123456"
+                  "otp": "123456",
+                  "type": "oob"
                 }
               },
               "response": {
@@ -1277,7 +1281,7 @@
               "sessionIn": "sess_4",
               "sessionOut": "sess_5",
               "raw": {
-                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\"\n}",
+                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\",\n  \"type\": \"oob\"\n}",
                 "response": "{\n  \"error\": \"insufficient_authorization\",\n  \"auth_session\": \"sess_5\",\n  \"next\": [\n    { \"action\": \"action:enroll:password:v1\", \"complexity\": { \"min_length\": 8, \"character_types\": [\"lowercase\", \"number\"] } }\n  ]\n}"
               }
             },
@@ -2853,7 +2857,8 @@
                 "body": {
                   "auth_session": "sess_4",
                   "action": "action:verify:otp:v1",
-                  "otp": "123456"
+                  "otp": "123456",
+                  "type": "oob"
                 }
               },
               "response": {
@@ -2884,7 +2889,7 @@
               "sessionIn": "sess_4",
               "sessionOut": "sess_5",
               "raw": {
-                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\"\n}",
+                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\",\n  \"type\": \"oob\"\n}",
                 "response": "{\n  \"error\": \"insufficient_authorization\",\n  \"auth_session\": \"sess_5\",\n  \"next\": [\n    { \"action\": \"action:identify:phone:v1\", \"optional\": true },\n    { \"action\": \"action:signup:confirm:v1\" }\n  ]\n}"
               }
             },
@@ -3133,7 +3138,8 @@
                 "body": {
                   "auth_session": "sess_4",
                   "action": "action:verify:otp:v1",
-                  "otp": "123456"
+                  "otp": "123456",
+                  "type": "oob"
                 }
               },
               "response": {
@@ -3164,7 +3170,7 @@
               "sessionIn": "sess_4",
               "sessionOut": "sess_5",
               "raw": {
-                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\"\n}",
+                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\",\n  \"type\": \"oob\"\n}",
                 "response": "{\n  \"error\": \"insufficient_authorization\",\n  \"auth_session\": \"sess_5\",\n  \"next\": [\n    { \"action\": \"action:identify:phone:v1\", \"optional\": true },\n    { \"action\": \"action:signup:confirm:v1\" }\n  ]\n}"
               }
             },
@@ -3575,7 +3581,8 @@
                 "body": {
                   "auth_session": "sess_4",
                   "action": "action:verify:otp:v1",
-                  "otp": "123456"
+                  "otp": "123456",
+                  "type": "oob"
                 }
               },
               "response": {
@@ -3618,7 +3625,7 @@
               "sessionIn": "sess_4",
               "sessionOut": "sess_5",
               "raw": {
-                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\"\n}",
+                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\",\n  \"type\": \"oob\"\n}",
                 "response": "{\n  \"error\": \"insufficient_authorization\",\n  \"auth_session\": \"sess_5\",\n  \"next\": [\n    { \"action\": \"action:identify:phone:v1\", \"optional\": true },\n    { \"action\": \"action:enroll:password:v1\", \"optional\": true, \"complexity\": { \"min_length\": 8, \"character_types\": [\"lowercase\", \"number\"] } },\n    { \"action\": \"action:signup:confirm:v1\" }\n  ]\n}"
               }
             },
@@ -3867,7 +3874,8 @@
                 "body": {
                   "auth_session": "sess_4",
                   "action": "action:verify:otp:v1",
-                  "otp": "123456"
+                  "otp": "123456",
+                  "type": "oob"
                 }
               },
               "response": {
@@ -3910,7 +3918,7 @@
               "sessionIn": "sess_4",
               "sessionOut": "sess_5",
               "raw": {
-                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\"\n}",
+                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\",\n  \"type\": \"oob\"\n}",
                 "response": "{\n  \"error\": \"insufficient_authorization\",\n  \"auth_session\": \"sess_5\",\n  \"next\": [\n    { \"action\": \"action:identify:phone:v1\", \"optional\": true },\n    { \"action\": \"action:enroll:password:v1\", \"optional\": true, \"complexity\": { \"min_length\": 8, \"character_types\": [\"lowercase\", \"number\"] } },\n    { \"action\": \"action:signup:confirm:v1\" }\n  ]\n}"
               }
             },
@@ -4201,7 +4209,8 @@
                 "body": {
                   "auth_session": "sess_4",
                   "action": "action:verify:otp:v1",
-                  "otp": "123456"
+                  "otp": "123456",
+                  "type": "oob"
                 }
               },
               "response": {
@@ -4244,7 +4253,7 @@
               "sessionIn": "sess_4",
               "sessionOut": "sess_5",
               "raw": {
-                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\"\n}",
+                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\",\n  \"type\": \"oob\"\n}",
                 "response": "{\n  \"error\": \"insufficient_authorization\",\n  \"auth_session\": \"sess_5\",\n  \"next\": [\n    { \"action\": \"action:identify:phone:v1\", \"optional\": true },\n    { \"action\": \"action:enroll:password:v1\", \"optional\": true, \"complexity\": { \"min_length\": 8, \"character_types\": [\"lowercase\", \"number\"] } },\n    { \"action\": \"action:signup:confirm:v1\" }\n  ]\n}"
               }
             },
@@ -4709,7 +4718,8 @@
                 "body": {
                   "auth_session": "sess_4",
                   "action": "action:verify:otp:v1",
-                  "otp": "123456"
+                  "otp": "123456",
+                  "type": "oob"
                 }
               },
               "response": {
@@ -4747,7 +4757,7 @@
               "sessionIn": "sess_4",
               "sessionOut": "sess_5",
               "raw": {
-                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\"\n}",
+                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\",\n  \"type\": \"oob\"\n}",
                 "response": "{\n  \"error\": \"insufficient_authorization\",\n  \"auth_session\": \"sess_5\",\n  \"next\": [\n    { \"action\": \"action:identify:phone:v1\", \"optional\": true },\n    { \"action\": \"action:enroll:password:v1\", \"complexity\": { \"min_length\": 8, \"character_types\": [\"lowercase\", \"number\"] } }\n  ]\n}"
               }
             },
@@ -5037,7 +5047,8 @@
                 "body": {
                   "auth_session": "sess_4",
                   "action": "action:verify:otp:v1",
-                  "otp": "123456"
+                  "otp": "123456",
+                  "type": "oob"
                 }
               },
               "response": {
@@ -5075,7 +5086,7 @@
               "sessionIn": "sess_4",
               "sessionOut": "sess_5",
               "raw": {
-                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\"\n}",
+                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\",\n  \"type\": \"oob\"\n}",
                 "response": "{\n  \"error\": \"insufficient_authorization\",\n  \"auth_session\": \"sess_5\",\n  \"next\": [\n    { \"action\": \"action:identify:phone:v1\", \"optional\": true },\n    { \"action\": \"action:enroll:password:v1\", \"complexity\": { \"min_length\": 8, \"character_types\": [\"lowercase\", \"number\"] } }\n  ]\n}"
               }
             },
@@ -5962,7 +5973,8 @@
                 "body": {
                   "auth_session": "sess_7",
                   "action": "action:verify:otp:v1",
-                  "otp": "654321"
+                  "otp": "654321",
+                  "type": "oob"
                 }
               },
               "response": {
@@ -5988,7 +6000,7 @@
               "sessionIn": "sess_7",
               "sessionOut": "sess_8",
               "raw": {
-                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_7\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"654321\"\n}",
+                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_7\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"654321\",\n  \"type\": \"oob\"\n}",
                 "response": "{\n  \"error\": \"insufficient_authorization\",\n  \"auth_session\": \"sess_8\",\n  \"next\": [\n    { \"action\": \"action:signup:confirm:v1\" }\n  ]\n}"
               }
             },
@@ -7061,7 +7073,8 @@
                 "body": {
                   "auth_session": "sess_7",
                   "action": "action:verify:otp:v1",
-                  "otp": "654321"
+                  "otp": "654321",
+                  "type": "oob"
                 }
               },
               "response": {
@@ -7099,7 +7112,7 @@
               "sessionIn": "sess_7",
               "sessionOut": "sess_8",
               "raw": {
-                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_7\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"654321\"\n}",
+                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_7\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"654321\",\n  \"type\": \"oob\"\n}",
                 "response": "{\n  \"error\": \"insufficient_authorization\",\n  \"auth_session\": \"sess_8\",\n  \"next\": [\n    { \"action\": \"action:enroll:password:v1\", \"optional\": true, \"complexity\": { \"min_length\": 8, \"character_types\": [\"lowercase\", \"number\"] } },\n    { \"action\": \"action:signup:confirm:v1\" }\n  ]\n}"
               }
             },
@@ -7900,7 +7913,8 @@
                 "body": {
                   "auth_session": "sess_7",
                   "action": "action:verify:otp:v1",
-                  "otp": "654321"
+                  "otp": "654321",
+                  "type": "oob"
                 }
               },
               "response": {
@@ -7933,7 +7947,7 @@
               "sessionIn": "sess_7",
               "sessionOut": "sess_8",
               "raw": {
-                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_7\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"654321\"\n}",
+                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_7\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"654321\",\n  \"type\": \"oob\"\n}",
                 "response": "{\n  \"error\": \"insufficient_authorization\",\n  \"auth_session\": \"sess_8\",\n  \"next\": [\n    { \"action\": \"action:enroll:password:v1\", \"complexity\": { \"min_length\": 8, \"character_types\": [\"lowercase\", \"number\"] } }\n  ]\n}"
               }
             },
@@ -8246,7 +8260,8 @@
                 "body": {
                   "auth_session": "sess_4",
                   "action": "action:verify:otp:v1",
-                  "otp": "123456"
+                  "otp": "123456",
+                  "type": "oob"
                 }
               },
               "response": {
@@ -8272,7 +8287,7 @@
               "sessionIn": "sess_4",
               "sessionOut": "sess_5",
               "raw": {
-                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\"\n}",
+                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\",\n  \"type\": \"oob\"\n}",
                 "response": "{\n  \"error\": \"insufficient_authorization\",\n  \"auth_session\": \"sess_5\",\n  \"next\": [\n    { \"action\": \"action:identify:phone:v1\" }\n  ]\n}"
               }
             },
@@ -8683,7 +8698,8 @@
                 "body": {
                   "auth_session": "sess_4",
                   "action": "action:verify:otp:v1",
-                  "otp": "123456"
+                  "otp": "123456",
+                  "type": "oob"
                 }
               },
               "response": {
@@ -8709,7 +8725,7 @@
               "sessionIn": "sess_4",
               "sessionOut": "sess_5",
               "raw": {
-                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\"\n}",
+                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\",\n  \"type\": \"oob\"\n}",
                 "response": "{\n  \"error\": \"insufficient_authorization\",\n  \"auth_session\": \"sess_5\",\n  \"next\": [\n    { \"action\": \"action:identify:phone:v1\" }\n  ]\n}"
               }
             },
@@ -9106,7 +9122,8 @@
                 "body": {
                   "auth_session": "sess_4",
                   "action": "action:verify:otp:v1",
-                  "otp": "123456"
+                  "otp": "123456",
+                  "type": "oob"
                 }
               },
               "response": {
@@ -9132,7 +9149,7 @@
               "sessionIn": "sess_4",
               "sessionOut": "sess_5",
               "raw": {
-                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\"\n}",
+                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\",\n  \"type\": \"oob\"\n}",
                 "response": "{\n  \"error\": \"insufficient_authorization\",\n  \"auth_session\": \"sess_5\",\n  \"next\": [\n    { \"action\": \"action:identify:phone:v1\" }\n  ]\n}"
               }
             },
@@ -9596,7 +9613,8 @@
                 "body": {
                   "auth_session": "sess_4",
                   "action": "action:verify:otp:v1",
-                  "otp": "123456"
+                  "otp": "123456",
+                  "type": "oob"
                 }
               },
               "response": {
@@ -9622,7 +9640,7 @@
               "sessionIn": "sess_4",
               "sessionOut": "sess_5",
               "raw": {
-                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\"\n}",
+                "request": "POST /e/authorize\n{\n  \"auth_session\": \"sess_4\",\n  \"action\": \"action:verify:otp:v1\",\n  \"otp\": \"123456\",\n  \"type\": \"oob\"\n}",
                 "response": "{\n  \"error\": \"insufficient_authorization\",\n  \"auth_session\": \"sess_5\",\n  \"next\": [\n    { \"action\": \"action:identify:phone:v1\" }\n  ]\n}"
               }
             },
@@ -10295,6 +10313,13 @@
             "examples": [
               "123456",
               "654321"
+            ]
+          },
+          {
+            "name": "type",
+            "occurrences": 18,
+            "examples": [
+              "oob"
             ]
           }
         ],
