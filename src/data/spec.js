@@ -717,12 +717,20 @@ export const NATIVE_SOCIAL_ACTIONS = {
 export const federatedConnections = (conn) =>
   conn?.connections?.length ? conn.connections : conn ? [{ name: conn.strategy, strategy: conn.strategy }] : [];
 
-/** What the live tenant actually negotiates today, verified by curl. */
+/**
+ * What the live console declares at initiate by default. The first four were verified by curl;
+ * phone challenge and the signup actions are declared so the tenant can offer them once it does —
+ * a capability the server does not support is simply absent from `next`.
+ */
 export const LIVE_CAPABILITIES = [
   'action:identify:email:v1',
   'action:identify:phone:v1',
   'action:challenge:email:v1',
+  'action:challenge:phone:v1',
   'action:verify:otp:v1',
+  'action:signup:v1',
+  'action:enroll:password:v1',
+  'action:signup:confirm:v1',
 ];
 
 /* ────────────────────────────────────────────────────────────────────────────
