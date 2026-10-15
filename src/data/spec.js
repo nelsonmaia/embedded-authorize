@@ -203,7 +203,7 @@ export const CAPABILITIES = [
     label: 'Identify by phone',
     status: 'negotiated',
     source: 'PWD',
-    request: [{ name: 'phone_number', example: '+15551234567', required: true }],
+    request: [{ name: 'phone', example: '+14155552671', required: true }],
     emits: [{ name: 'optional', value: 'true when the step may be skipped' }],
     doc:
       'The capability negotiates and appears in `next`, but no handler is registered — it ' +

@@ -1021,9 +1021,10 @@ function doIdentify(state, action, payload) {
       : action === 'action:identify:username:v1'
       ? 'username'
       : 'phone_number';
-  const value = String(payload[field] || '').trim();
+  // identify:phone sends `phone`; the user record keeps it as `phone_number`.
+  const value = String(payload[field === 'phone_number' ? 'phone' : field] || '').trim();
 
-  if (!value) return badRequest(`Missing "${field}".`, state);
+  if (!value) return badRequest(`Missing "${field === 'phone_number' ? 'phone' : field}".`, state);
   if (field === 'email' && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value)) {
     return badRequest('Invalid email format.', state);
   }

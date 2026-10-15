@@ -235,9 +235,7 @@ test('what the registry says an action takes is what the calls send', () => {
       if (!declared.has(f.name)) problems.push(`${a.action}: sends ${f.name} (${f.occurrences}×), undeclared`);
     }
   }
-  // `phone` on identify:phone is a real divergence between the two models, not a registry slip:
-  // the signup model sends `phone`, the registry declares `phone_number`.
-  assert.deepEqual(problems, ['action:identify:phone:v1: sends phone (18×), undeclared']);
+  assert.deepEqual(problems, []);
 });
 
 test('a challenge withdrawn while its code is outstanding is caught', () => {
