@@ -289,8 +289,8 @@ Two things are **derived**, and flagged as such wherever they appear:
 ## Where the two models disagree
 
 The signup and sign-in models were written separately and
-describe some calls differently — signup sends `phone` where the registry declares `phone_number`,
-and signup never sends `index` on `challenge:phone` although the registry marks it required (the
+describe some calls differently — signup never sends `index` on `challenge:phone` although the
+registry marks it required (the
 registry's entry is the *MFA* challenge, signup's is a just-claimed number, so they may legitimately
 differ). Neither is rewritten to match the other; the divergence is computed from the data and
 displayed, because an SDK has to handle what actually ships.
