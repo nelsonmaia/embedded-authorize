@@ -177,7 +177,7 @@ export function negotiate(state) {
     !identified && (conn.strategy === 'sms' || (conn.strategy === 'auth0' && ids.includes('phone'))),
     !identified
       ? ids.includes('phone') || conn.strategy === 'sms'
-        ? 'Connection accepts a phone identifier. NOTE: negotiates but has no handler — invoking it returns 501.'
+        ? 'Connection accepts a phone identifier.'
         : 'Connection does not accept a phone identifier.'
       : 'A user is already identified.'
   );
@@ -272,8 +272,8 @@ export function negotiate(state) {
         'wrong-code counter.'
       : 'Phone OTP is enabled and the user identified by phone.',
     identified && idType === 'phone'
-      ? { index: 0, identifier: maskedFor('phone'), delivery_method: ['text', 'voice'] }
-      : { index: 0, delivery_method: ['text', 'voice'] }
+      ? { index: 0, identifier: maskedFor('phone'), delivery_methods: ['text', 'voice'] }
+      : { index: 0, delivery_methods: ['text', 'voice'] }
   );
 
   /* -- pending challenge → verify -------------------------------------- */
@@ -328,7 +328,7 @@ export function negotiate(state) {
   if (mfaDue && !state.pendingChallenge) {
     for (const [id, factor, descriptor] of [
       ['action:challenge:email:v1', 'email', { index: 0, identifier: maskIdentifier(state.user?.email || '') }],
-      ['action:challenge:phone:v1', 'phone', { index: 0, identifier: '+1******67', delivery_method: ['text', 'voice'] }],
+      ['action:challenge:phone:v1', 'phone', { index: 0, identifier: '+1******67', delivery_methods: ['text', 'voice'] }],
     ]) {
       if (enrolled.includes(factor)) {
         const existing = candidates.find((c) => c.id === id);
@@ -941,7 +941,7 @@ export function submit(state, action, payload = {}) {
 
     case 'action:challenge:email:v1':
     case 'action:challenge:phone:v1':
-      return doOtpChallenge(state, action);
+      return doOtpChallenge(state, action, payload);
 
     case 'action:challenge:recovery-code:v1':
       return doNoopChallenge(state, action);
@@ -1029,17 +1029,6 @@ function doIdentify(state, action, payload) {
     return badRequest('Invalid email format.', state);
   }
 
-  if (action === 'action:identify:phone:v1') {
-    return {
-      status: 501,
-      body: { error: 'not_implemented', error_description: 'No handler registered for action:identify:phone:v1.' },
-      note:
-        'Negotiated but unimplemented. On a phone-only connection this makes embedded login ' +
-        'unreachable — flagged in the Password RFD non-goals.',
-      gap: 'identify:phone negotiates but has no handler',
-    };
-  }
-
   const idType = field === 'phone_number' ? 'phone' : field;
   const known = SPEC_KNOWN_USERS.find(
     (u) => String(u[field] || '').toLowerCase() === value.toLowerCase()
@@ -1092,8 +1081,12 @@ function doIdentify(state, action, payload) {
   return res;
 }
 
-function doOtpChallenge(state, action) {
+function doOtpChallenge(state, action, payload = {}) {
   const channel = action === 'action:challenge:email:v1' ? 'email' : 'phone';
+  // Matches the live tenant: the phone challenge must name how to deliver the code.
+  if (channel === 'phone' && !['text', 'voice'].includes(payload.delivery_method)) {
+    return badRequest('Missing or invalid "delivery_method" — one of text, voice.', state);
+  }
   const target = channel === 'email' ? state.user?.email || state.user?.identifier : state.user?.phone_number || state.user?.identifier;
 
   // A second challenge on the channel that already has one outstanding is a RESEND, not a fresh
@@ -1558,12 +1551,6 @@ function unimplementedNote(action) {
       'Client-declared capability, not a server action. Declaring it changes the shape of the ' +
       'action:interaction:form:v1 descriptor — form_id + state instead of an href — but it is ' +
       'never something the client invokes.'
-    );
-  }
-  if (action === 'action:identify:phone:v1') {
-    return (
-      'The capability negotiates and is advertised in `next`, but no handler exists — the gap the ' +
-      'Password RFD calls out in its non-goals.'
     );
   }
   return 'No handler is registered for this action in the simulator.';

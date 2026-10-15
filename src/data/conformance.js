@@ -145,7 +145,6 @@ export function checkResponse({ request, status, body, context } = {}) {
       why:
         'It was advertised in next[] and accepted into the allow-list, then refused. A client that ' +
         'trusts next[] — which is the contract — cannot avoid this.',
-      gap: gapTitled('identify:phone'),
     });
   }
 

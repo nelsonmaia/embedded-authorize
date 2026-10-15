@@ -201,15 +201,17 @@ export const CAPABILITIES = [
     id: 'action:identify:phone:v1',
     group: 'identify',
     label: 'Identify by phone',
-    status: 'negotiated',
+    status: 'live',
     source: 'PWD',
     request: [{ name: 'phone', example: '+14155552671', required: true }],
     emits: [{ name: 'optional', value: 'true when the step may be skipped' }],
     doc:
-      'The capability negotiates and appears in `next`, but no handler is registered — it ' +
-      'resolves to 501 not_implemented. Called out explicitly as a pre-existing gap in the ' +
-      'Password RFD non-goals. Consequence: on a connection whose only identifier is phone, ' +
-      'embedded login is unreachable.',
+      'The phone counterpart of identify:email: same anti-enumeration guarantee, same `next` ' +
+      'whether or not the number belongs to a user. The field is `phone`, not `phone_number` ' +
+      '(the connection calls the identifier type phone_number; the request does not), and it ' +
+      'must be a valid E.164 number. Verified live: answers with challenge:phone carrying index, ' +
+      'a masked identifier and delivery_methods. The Password RFD listed it as a 501 gap; the ' +
+      'handler has since landed.',
   },
   {
     id: 'action:identify:username:v1',
@@ -312,21 +314,26 @@ export const CAPABILITIES = [
     id: 'action:challenge:phone:v1',
     group: 'mfa',
     label: 'Challenge — phone (SMS / voice)',
-    status: 'spec',
+    status: 'live',
     source: 'D3',
     request: [
       { name: 'index', example: 0, required: true },
-      { name: 'delivery_method', example: 'text', required: false, enum: ['text', 'voice'] },
+      { name: 'delivery_method', example: 'text', required: true, enum: ['text', 'voice'] },
     ],
     emits: [
       { name: 'index', value: 0 },
-      { name: 'identifier', value: '+1******89' },
-      { name: 'delivery_method', value: ['text', 'voice'] },
+      { name: 'identifier', value: '********2671' },
+      { name: 'delivery_methods', value: ['text'] },
     ],
     doc:
       'One enrolled phone that supports both text and voice is ONE authenticator with ' +
-      'delivery_method ["text","voice"] — index enumerates distinct authenticators, not delivery ' +
-      'channels. `index` is required even with a single authenticator, so the schema stays uniform.',
+      'delivery_methods ["text","voice"] — index enumerates distinct authenticators, not delivery ' +
+      'channels. `index` is required even with a single authenticator, so the schema stays uniform.\n\n' +
+      'Verified live as a primary challenge after identify:phone. The descriptor offers ' +
+      '`delivery_methods` (plural, a list); the request picks one as `delivery_method` (singular), ' +
+      'and the tenant REQUIRES it — omitting it is a 400 "must have required property ' +
+      'delivery_method", and anything outside text/voice is a 400 too. index is capped at 50 by ' +
+      'the schema. Answers with verify:otp carrying channel "sms".',
   },
   {
     id: 'action:challenge:push:v1',
@@ -384,13 +391,16 @@ export const CAPABILITIES = [
     id: 'action:signup:v1',
     group: 'signup',
     label: 'Begin signup',
-    status: 'spec',
+    status: 'live',
     source: 'SIGNUP',
     request: [],
-    emits: [],
+    emits: [{ name: 'identifiers', value: { email: { required: true }, phone_number: { required: true } } }],
     doc:
       'Switches session intent to signup. Anti-enumeration is why sign-in and signup share one ' +
-      'response shape — agreed as a design constraint in the Milestone 1 plan.',
+      'response shape — agreed as a design constraint in the Milestone 1 plan.\n\n' +
+      'Verified live: offered at initiate beside the identify actions, with an `identifiers` map ' +
+      'of what the connection requires at signup (keyed by identifier type, so phone_number here). ' +
+      'Invoking it answers with the identify actions only.',
   },
   {
     id: 'action:enroll:password:v1',
@@ -718,9 +728,8 @@ export const federatedConnections = (conn) =>
   conn?.connections?.length ? conn.connections : conn ? [{ name: conn.strategy, strategy: conn.strategy }] : [];
 
 /**
- * What the live console declares at initiate by default. The first four were verified by curl;
- * phone challenge and the signup actions are declared so the tenant can offer them once it does —
- * a capability the server does not support is simply absent from `next`.
+ * What the live console declares at initiate by default. All verified live: email and phone
+ * sign-in through to an authorization code, and signup offered at initiate.
  */
 export const LIVE_CAPABILITIES = [
   'action:identify:email:v1',
@@ -786,7 +795,7 @@ export const ERRORS = {
     doc:
       'The action negotiated, was advertised in `next`, and then had no handler behind it. A ' +
       'client that trusts `next` — which is the contract — cannot avoid this, so it is a gap in ' +
-      'the server rather than a mistake by the caller. Reached today by identify:phone.',
+      'the server rather than a mistake by the caller.',
   },
   server_error: {
     http: 500,
@@ -1332,16 +1341,6 @@ export const KNOWN_GAPS = [
       'tenant that has not been enabled. And an empty alternatives array must not be handled as a ' +
       'failure: it is the truthful answer for a client with no matching grants.',
     source: 'DISCO',
-  },
-  {
-    title: 'identify:phone negotiates but has no handler',
-    severity: 'gap',
-    spec: 'The capability is in the registry and negotiates.',
-    actual: 'Appears in `next`, but invoking it resolves to 501 not_implemented.',
-    impact:
-      'A connection whose only active identifier is phone_number cannot log in at all — and password ' +
-      'login stays unreachable there even after the Password RFD ships. Called out in its non-goals.',
-    source: 'PWD',
   },
   {
     title: 'Capability naming is inconsistent across specs',

@@ -222,7 +222,14 @@ test('what the registry says an action emits is what the calls carry', () => {
     for (const f of observed) if (!declared.has(f)) problems.push(`${a.action}: emits ${f}, undeclared`);
     for (const d of declared) if (!observed.has(d)) problems.push(`${a.action}: declares ${d}, never seen`);
   }
-  assert.deepEqual(problems, []);
+  // The registry follows the live tenant; the signup PRD predates it. Real divergences, not slips:
+  // the tenant offers `delivery_methods` (plural) on challenge:phone and an `identifiers` map on
+  // signup, neither of which the PRD's examples show.
+  assert.deepEqual(problems, [
+    'action:challenge:phone:v1: emits delivery_method, undeclared',
+    'action:challenge:phone:v1: declares delivery_methods, never seen',
+    'action:signup:v1: declares identifiers, never seen',
+  ]);
 });
 
 test('what the registry says an action takes is what the calls send', () => {

@@ -178,6 +178,10 @@ export function liveTransport({ tenant, capabilities }) {
       for (const k of ['index', 'delivery_method']) {
         if (nextEntry[k] !== undefined && !Array.isArray(nextEntry[k])) seed[k] = nextEntry[k];
       }
+      // The descriptor offers `delivery_methods`; the request must name one of them.
+      if (Array.isArray(nextEntry.delivery_methods) && nextEntry.delivery_methods.length) {
+        seed.delivery_method ??= nextEntry.delivery_methods[0];
+      }
       for (const f of cap?.request || []) {
         if (seed[f.name] !== undefined) continue;
         if (f.name === 'index') continue;

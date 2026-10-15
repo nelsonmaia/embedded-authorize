@@ -290,9 +290,10 @@ Two things are **derived**, and flagged as such wherever they appear:
 
 The signup and sign-in models were written separately and
 describe some calls differently — signup never sends `index` on `challenge:phone` although the
-registry marks it required (the
-registry's entry is the *MFA* challenge, signup's is a just-claimed number, so they may legitimately
-differ). Neither is rewritten to match the other; the divergence is computed from the data and
+registry marks it required (the registry's entry is the *MFA* challenge, signup's is a just-claimed
+number, so they may legitimately differ). The registry also follows the live tenant where the signup
+PRD predates it: `challenge:phone` offers `delivery_methods` (plural) where the PRD shows
+`delivery_method`, and `signup:v1` carries an `identifiers` map the PRD never shows. Neither is rewritten to match the other; the divergence is computed from the data and
 displayed, because an SDK has to handle what actually ships.
 
 `status` on a capability should stay honest: `live` means verified against a real tenant, not "a
