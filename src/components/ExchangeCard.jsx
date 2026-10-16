@@ -25,6 +25,15 @@ const TONE = {
 
 function curlFor(domain, method, path, body) {
   const host = domain || 'YOUR_TENANT.auth0.com';
+  if (method === 'PATCH') {
+    const { access_token: token = '<access_token>', ...patch } = body ?? {};
+    const json = JSON.stringify(patch, null, 2).replace(/'/g, "'\\''");
+    return `curl -sS -X PATCH 'https://${host}${path}' \\\n  -H 'authorization: Bearer ${token}' \\\n  -H 'content-type: application/json' \\\n  -d '${json}'`;
+  }
+  if (method === 'GET') {
+    const token = body?.access_token ?? '<access_token>';
+    return `curl -sS 'https://${host}${path}' \\\n  -H 'authorization: Bearer ${token}'`;
+  }
   const json = JSON.stringify(body, null, 2).replace(/'/g, "'\\''");
   return `curl -sS -X ${method} 'https://${host}${path}' \\\n  -H 'content-type: application/json' \\\n  -d '${json}'`;
 }
@@ -218,6 +227,7 @@ export function ExchangeCard({
   title,
   hint,
   path,
+  method: methodProp,
   draftText,
   onDraftChange,
   parseError,
@@ -232,6 +242,7 @@ export function ExchangeCard({
   /* The token exchange is a different endpoint, so the header follows the request that was
      actually made rather than assuming every card is /e/authorize. */
   const endpoint = path ?? result?.request?.path ?? '/e/authorize';
+  const method = methodProp ?? result?.request?.method ?? 'POST';
 
   const pending = !result;
   const [copied, setCopied] = useState(false);
@@ -241,7 +252,7 @@ export function ExchangeCard({
   const copy = async () => {
     const body = pending ? safeParse(draftText) : result.request.body;
     try {
-      await navigator.clipboard.writeText(curlFor(domain, 'POST', endpoint, body));
+      await navigator.clipboard.writeText(curlFor(domain, method, endpoint, body));
       setCopied(true);
       setTimeout(() => setCopied(false), 1400);
     } catch { /* insecure context — clipboard unavailable */ }
@@ -277,7 +288,7 @@ export function ExchangeCard({
       <div className="grid lg:grid-cols-2">
         <div className="min-w-0 border-b lg:border-b-0 lg:border-r">
           <PaneHead>
-            <span className="font-mono text-[hsl(var(--ok))]">POST</span>
+            <span className="font-mono text-[hsl(var(--ok))]">{method}</span>
             <span className="font-mono normal-case tracking-normal">{endpoint}</span>
             <span className="flex-1" />
             {pending && <span className="normal-case tracking-normal text-primary">editable</span>}

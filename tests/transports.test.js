@@ -179,3 +179,78 @@ test('reset returns a transport to its starting point', async () => {
   const b = await t.start();
   assert.deepEqual(b.body, a.body);
 });
+
+test('live: MRRT refresh and My Account profile ride the token and header through the proxy', async () => {
+  const { liveTransport } = await import('../src/transports/liveTransport.js');
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, init) => {
+    const env = JSON.parse(init.body);
+    calls.push(env);
+    const body = env.path === '/oauth/token'
+      ? env.body.grant_type === 'refresh_token'
+        ? { access_token: 'AT_ME', token_type: 'Bearer' }
+        : { access_token: 'AT0', refresh_token: 'RT0' }
+      : { name: 'Ada' };
+    return { json: async () => ({ ok: true, status: 200, body, durationMs: 1 }) };
+  };
+  try {
+    const t = liveTransport({
+      tenant: { domain: 'https://Acme.auth0.com/', clientId: 'cid', connection: 'c' },
+      capabilities: [],
+    });
+    assert.equal(t.hasRefreshToken(), false);
+    await t.exchange({ grant_type: 'authorization_code', code: 'c' });
+    assert.equal(t.hasRefreshToken(), true);
+
+    const seed = t.refreshSeed();
+    assert.deepEqual(seed, {
+      grant_type: 'refresh_token', client_id: 'cid', refresh_token: 'RT0',
+      audience: 'https://acme.auth0.com/me/', scope: 'read:me:profile update:me:profile read:me:authentication_methods read:me:factors',
+    });
+    const r = await t.refresh();
+    assert.equal(r.request.body.refresh_token, '••••••••', 'shown redacted');
+    assert.equal(calls.at(-1).body.refresh_token, 'RT0', 'sent in full');
+
+    assert.equal(t.profileSeed().access_token, 'AT_ME');
+    const p = await t.getProfile({ access_token: 'AT_ME', fields: 'name' });
+    const last = calls.at(-1);
+    assert.equal(last.method, 'GET');
+    assert.equal(last.path, '/me/v1/profile?fields=name');
+    assert.equal(last.authorization, 'Bearer AT_ME');
+    assert.equal(last.body, undefined);
+    assert.equal(p.request.method, 'GET');
+    assert.equal(p.body.name, 'Ada');
+
+    const u = await t.updateProfile();
+    const patched = calls.at(-1);
+    assert.equal(patched.method, 'PATCH');
+    assert.equal(patched.path, '/me/v1/profile');
+    assert.equal(patched.authorization, 'Bearer AT_ME');
+    assert.deepEqual(patched.body, { family_name: 'Hazell nut' }, 'token is a header, not in the body');
+    assert.equal(u.request.method, 'PATCH');
+
+    await t.listAuthMethods({ access_token: 'AT_ME', type: 'phone' });
+    const listed = calls.at(-1);
+    assert.equal(listed.method, 'GET');
+    assert.equal(listed.path, '/me/v1/authentication-methods?type=phone');
+    assert.equal(listed.authorization, 'Bearer AT_ME');
+
+    await t.listFactors();
+    const factors = calls.at(-1);
+    assert.equal(factors.method, 'GET');
+    assert.equal(factors.path, '/me/v1/factors');
+    assert.equal(factors.authorization, 'Bearer AT_ME');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('live: verify:otp is seeded with the type the server named on the next[] entry', async () => {
+  const { liveTransport } = await import('../src/transports/liveTransport.js');
+  const t = liveTransport({ tenant: { domain: 'x.auth0.com', clientId: 'cid', connection: 'c' }, capabilities: [] });
+  const totp = t.seedFor({ action: 'action:verify:otp:v1', channel: 'totp' });
+  assert.equal(totp.type, 'totp');
+  const email = t.seedFor({ action: 'action:verify:otp:v1', channel: 'email' });
+  assert.equal(email.type, 'oob', 'the recorded email walk is unchanged');
+});

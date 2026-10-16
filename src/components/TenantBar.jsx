@@ -13,7 +13,7 @@ const FIELDS = [
   ['clientId', 'Client ID', 'public client', 'flex-[2]'],
   ['connection', 'Connection', 'Username-Password-Authentication', 'flex-[2]'],
   ['audience', 'Audience', 'optional', 'flex-1'],
-  ['scope', 'Scope', 'openid profile email', 'flex-1'],
+  ['scope', 'Scope', 'openid profile email offline_access', 'flex-1'],
 ];
 
 export function TenantBar({ tenant, onChange }) {

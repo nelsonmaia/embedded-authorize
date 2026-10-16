@@ -205,3 +205,78 @@ test('only GET and POST are forwarded', async () => {
   assert.equal(res.statusCode, 403);
   assert.equal(res.payload.error, 'method_not_allowed');
 });
+
+test('forwards My Account paths, with the bearer token as a header and GET as the method', async () => {
+  const res = fakeRes();
+  let seen = null;
+  await forward(
+    { domain: 'x.auth0.com', path: '/me/v1/profile?fields=name', method: 'GET', authorization: 'Bearer abc.def-ghi_1' },
+    res,
+    { doFetch: async (url, init) => { seen = { url, init }; return okFetch({ name: 'A' }, 200)(); } }
+  );
+  assert.equal(res.payload.ok, true);
+  assert.equal(seen.url, 'https://x.auth0.com/me/v1/profile?fields=name');
+  assert.equal(seen.init.method, 'GET');
+  assert.equal(seen.init.headers.authorization, 'Bearer abc.def-ghi_1');
+  assert.equal(seen.init.body, undefined);
+});
+
+test('an Authorization header is refused anywhere but /me/v1, and when malformed', async () => {
+  for (const [path, authorization] of [
+    ['/oauth/token', 'Bearer abc'],
+    ['/me/v1/profile', 'Basic abc'],
+    ['/me/v1/profile', 'Bearer abc\r\nX-Evil: 1'],
+  ]) {
+    const res = fakeRes();
+    let fetched = false;
+    await forward({ domain: 'x.auth0.com', path, method: 'GET', authorization }, res, {
+      doFetch: async () => { fetched = true; return okFetch()(); },
+    });
+    assert.equal(res.statusCode, 400, `${path} ${authorization}`);
+    assert.equal(res.payload.error, 'authorization_rejected');
+    assert.equal(fetched, false);
+  }
+});
+
+test('/me/ is not a way to reach the rest of the tenant', async () => {
+  for (const path of ['/me/v2/profile', '/me/v1/../../api/v2/users', '/me/v1//x', '/api/v2/users']) {
+    const res = fakeRes();
+    await forward({ domain: 'x.auth0.com', path, method: 'GET' }, res, {
+      doFetch: async () => { throw new Error('should not be called'); },
+    });
+    assert.equal(res.payload.error, 'path_not_allowed', path);
+  }
+});
+
+test('neither the bearer token nor a refresh token reaches a log line', async () => {
+  const lines = [];
+  await forward(
+    { domain: 'x.auth0.com', path: '/me/v1/profile', method: 'GET', authorization: 'Bearer SECRET_AT' },
+    fakeRes(),
+    { log: (m) => lines.push(m), doFetch: async () => okFetch({ refresh_token: 'SECRET_RT' }, 200)() }
+  );
+  assert.ok(lines.length > 0);
+  assert.ok(!lines.join('\n').includes('SECRET'));
+});
+
+test('PATCH is forwarded on /me/v1 with a JSON body, and nowhere else', async () => {
+  const res = fakeRes();
+  let seen = null;
+  await forward(
+    { domain: 'x.auth0.com', path: '/me/v1/profile', method: 'PATCH', authorization: 'Bearer abc', body: { family_name: 'Hazell nut' } },
+    res,
+    { doFetch: async (url, init) => { seen = init; return okFetch({}, 200)(); } }
+  );
+  assert.equal(res.payload.ok, true);
+  assert.equal(seen.method, 'PATCH');
+  assert.equal(seen.headers['content-type'], 'application/json');
+  assert.equal(seen.body, '{"family_name":"Hazell nut"}');
+
+  for (const path of ['/e/authorize', '/oauth/token']) {
+    const r = fakeRes();
+    await forward({ domain: 'x.auth0.com', path, method: 'PATCH', body: {} }, r, {
+      doFetch: async () => { throw new Error('should not be called'); },
+    });
+    assert.equal(r.payload.error, 'method_not_allowed', path);
+  }
+});

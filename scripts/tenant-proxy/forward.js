@@ -12,8 +12,9 @@
  *
  * What still bounds it, because "any tenant" must not become "any request":
  *
- *   paths    three, exactly: /e/authorize, /e/discovery, /oauth/token. Not the Management API.
- *   methods  GET and POST.
+ *   paths    /e/authorize, /e/discovery, /oauth/token, and the My Account API under /me/v1/.
+ *            Not the Management API.
+ *   methods  GET and POST; PATCH too, but only on the My Account API.
  *   secrets  a client_secret in the body is refused outright; this drives public clients.
  *   domain   a routable public hostname. Never a URL — the request URL is rebuilt from validated
  *            parts — and never an address inside whatever network the server sits in, so an open
@@ -24,6 +25,15 @@
  */
 
 const ALLOWED_PATHS = ['/e/authorize', '/e/discovery', '/oauth/token'];
+/* The My Account API. A prefix rather than a list because it is a whole API the console will grow
+   into; it is still one fixed path family on the tenant the user typed, nothing wider. */
+const MY_ACCOUNT_PREFIX = '/me/v1/';
+const isMyAccount = (pathname) =>
+  pathname.startsWith(MY_ACCOUNT_PREFIX) && !pathname.includes('..') && !pathname.includes('//');
+/* Only a bearer or DPoP credential, only on My Account paths, and only in this shape. The token is
+   the caller's own and goes to the tenant they named, but a header is a way to smuggle things, so
+   the value is matched rather than passed through. */
+const AUTHORIZATION_RE = /^(Bearer|DPoP) [A-Za-z0-9\-._~+/]+=*$/;
 const HOSTNAME_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
 const UPSTREAM_TIMEOUT_MS = 15000;
 
@@ -35,6 +45,8 @@ const PASS_HEADERS = [
   'x-ratelimit-reset',
   'access-control-allow-origin',
   'location',
+  'www-authenticate',
+  'retry-after',
 ];
 
 /**
@@ -129,22 +141,39 @@ export async function forward(
   const q = rawPath.indexOf('?');
   const pathname = q === -1 ? rawPath : rawPath.slice(0, q);
   const search = q === -1 ? '' : rawPath.slice(q);
-  if (!ALLOWED_PATHS.includes(pathname)) {
+  if (!ALLOWED_PATHS.includes(pathname) && !isMyAccount(pathname)) {
     return send(res, 403, {
       ok: false,
       error: 'path_not_allowed',
-      detail: `"${pathname}" is not allowed. Allowed: ${ALLOWED_PATHS.join(', ')}.`,
+      detail: `"${pathname}" is not allowed. Allowed: ${ALLOWED_PATHS.join(', ')}, ${MY_ACCOUNT_PREFIX}*.`,
     });
   }
-  if (!['GET', 'POST'].includes(method)) {
-    return send(res, 403, { ok: false, error: 'method_not_allowed', detail: 'GET or POST only.' });
+  const patchOk = method === 'PATCH' && isMyAccount(pathname);
+  if (!['GET', 'POST'].includes(method) && !patchOk) {
+    return send(res, 403, {
+      ok: false,
+      error: 'method_not_allowed',
+      detail: 'GET or POST only (PATCH on /me/v1/*).',
+    });
   }
 
   // Rebuilt from validated parts — a caller-supplied URL is never followed.
   const url = `https://${host}${pathname}${search}`;
 
   const init = { method, headers: { accept: 'application/json' }, redirect: 'manual' };
-  if (method === 'POST') {
+
+  const authorization = envelope.authorization;
+  if (authorization != null) {
+    if (!isMyAccount(pathname) || typeof authorization !== 'string' || !AUTHORIZATION_RE.test(authorization)) {
+      return send(res, 400, {
+        ok: false,
+        error: 'authorization_rejected',
+        detail: 'An Authorization header is only forwarded to /me/v1/*, as `Bearer <token>` or `DPoP <token>`.',
+      });
+    }
+    init.headers.authorization = authorization;
+  }
+  if (method === 'POST' || method === 'PATCH') {
     const isForm = envelope.contentType === 'application/x-www-form-urlencoded';
     if (isForm && envelope.body && typeof envelope.body === 'object') {
       init.headers['content-type'] = 'application/x-www-form-urlencoded';

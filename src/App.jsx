@@ -28,8 +28,12 @@ const DEFAULT_TENANT = {
   clientId: 'yQjhZg0l3xGZTfDdCMYIdqQVEs0i020m',
   connection: 'Username-Password-Authentication',
   audience: '',
-  scope: 'openid profile email',
+  scope: 'openid profile email offline_access',
 };
+
+/* The default before offline_access was added. A tab that saved it unchanged never chose it, and
+   would otherwise never get a refresh token, so it is upgraded rather than honoured. */
+const PREVIOUS_DEFAULT_SCOPE = 'openid profile email';
 
 function loadTenant() {
   try {
@@ -39,7 +43,7 @@ function loadTenant() {
       clientId: v.clientId || DEFAULT_TENANT.clientId,
       connection: v.connection || DEFAULT_TENANT.connection,
       audience: v.audience || DEFAULT_TENANT.audience,
-      scope: v.scope || DEFAULT_TENANT.scope,
+      scope: !v.scope || v.scope === PREVIOUS_DEFAULT_SCOPE ? DEFAULT_TENANT.scope : v.scope,
     };
   } catch {
     return { ...DEFAULT_TENANT };

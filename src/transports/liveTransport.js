@@ -15,7 +15,12 @@ import { checkResponse, wasAccepted } from '../data/conformance.js';
 import { explainMissingProxy, probeServer } from '../data/serverProbe.js';
 import { TENANT } from '../data/endpoints.js';
 
-const SECRETS = ['password', 'recovery_code'];
+
+/* The bare host of whatever was typed in the domain box; the proxy does the same before it dials. */
+const hostOf = (v) =>
+  String(v ?? '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/:\d+$/, '');
+
+const SECRETS = ['password', 'recovery_code', 'refresh_token', 'access_token'];
 
 function forDisplay(body) {
   const out = { ...body };
@@ -33,14 +38,24 @@ export function liveTransport({ tenant, capabilities }) {
   const spent = new Set();
   let authorizationCode = null;
   let sentCodeChallenge = false;
+  /* What /oauth/token last handed back. The refresh token is what MRRT trades for a token aimed
+     at a different API; the access token is what that API is then called with. */
+  let refreshToken = null;
+  let accessToken = null;
 
-  async function call(path, body) {
+  async function call(path, body, { method = 'POST', authorization } = {}) {
     let res;
     try {
       res = await fetch(TENANT(), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ domain: tenant.domain.trim(), path, method: 'POST', body }),
+        body: JSON.stringify({
+          domain: tenant.domain.trim(),
+          path,
+          method,
+          body,
+          ...(authorization ? { authorization } : {}),
+        }),
       });
     } catch (e) {
       return { ok: false, error: 'proxy_unreachable', detail: e.message };
@@ -70,14 +85,19 @@ export function liveTransport({ tenant, capabilities }) {
     }
   }
 
-  const wrap = (sent, env, path = '/e/authorize') => {
+  const wrap = (sent, env, path = '/e/authorize', method = 'POST') => {
     if (!env.ok) {
       return {
-        request: { method: 'POST', path, body: forDisplay(sent) },
+        request: { method, path, body: forDisplay(sent) },
         status: 0,
         body: {},
         error: `${env.error}${env.detail ? ` — ${env.detail}` : ''}`,
       };
+    }
+    // Held for the MRRT step, which needs the refresh token from here and the access token from there.
+    if (path === '/oauth/token') {
+      if (env.body?.refresh_token) refreshToken = env.body.refresh_token;
+      if (env.body?.access_token) accessToken = env.body.access_token;
     }
     const replayed = !!sent.auth_session && spent.has(sent.auth_session);
     if (sent.auth_session && wasAccepted(env.status, env.body)) spent.add(sent.auth_session);
@@ -88,16 +108,17 @@ export function liveTransport({ tenant, capabilities }) {
       context: { sessionAlreadyUsed: replayed, declared },
       // The UNREDACTED body is what the checker sees: it needs to know whether a code_challenge
       // was sent, and redaction only exists so the screen does not echo a password back.
-      request: { method: 'POST', path, body: sent },
+      request: { method, path, body: sent },
       status: env.status,
       body: env.body,
     };
 
     return {
-      request: { method: 'POST', path, body: forDisplay(sent) },
+      request: { method, path, body: forDisplay(sent) },
       status: env.status,
       body: env.body,
       durationMs: env.durationMs,
+      // The contract covers /e/authorize only; the token and My Account calls are not judged by it.
       findings: path === '/e/authorize' ? checkResponse(exchange) : [],
     };
   };
@@ -166,6 +187,100 @@ export function liveTransport({ tenant, capabilities }) {
       return wrap(sent, await call('/oauth/token', sent), '/oauth/token');
     },
 
+    /** Whether a refresh token came back, i.e. whether the MRRT step can be offered at all. */
+    hasRefreshToken() {
+      return !!refreshToken;
+    },
+
+    /**
+     * MRRT: trade the refresh token for an access token aimed at another API. The audience is the
+     * My Account API's, `https://{domain}/me/` — the tenant's own domain, which must match the one
+     * the token was issued for. It is a default, not a rule: the payload is editable.
+     */
+    refreshSeed() {
+      return {
+        grant_type: 'refresh_token',
+        client_id: tenant.clientId.trim(),
+        refresh_token: refreshToken ?? '<refresh_token>',
+        audience: `https://${hostOf(tenant.domain)}/me/`,
+        scope: 'read:me:profile update:me:profile read:me:authentication_methods read:me:factors',
+      };
+    },
+
+    async refresh(body) {
+      const sent = body ?? this.refreshSeed();
+      return wrap(sent, await call('/oauth/token', sent), '/oauth/token');
+    },
+
+    /** The access token the last refresh (or the code exchange) produced. */
+    profileSeed() {
+      return { access_token: accessToken ?? '<access_token>' };
+    },
+
+    /**
+     * GET /me/v1/profile. `body` is { access_token, fields?, include_fields? }: the token travels
+     * as an Authorization header, never in the URL, and the rest become the query string.
+     */
+    async getProfile(body) {
+      const { access_token: token, fields, include_fields: include } = body ?? this.profileSeed();
+      const q = new URLSearchParams();
+      if (fields) q.set('fields', fields);
+      if (include !== undefined && include !== '') q.set('include_fields', String(include));
+      const path = `/me/v1/profile${q.size ? `?${q}` : ''}`;
+      return wrap(
+        { access_token: token, ...(fields ? { fields } : {}) },
+        await call(path, undefined, { method: 'GET', authorization: `Bearer ${token}` }),
+        path,
+        'GET'
+      );
+    },
+
+    /** PATCH /me/v1/profile. Everything but `access_token` is the JSON body, as typed. */
+    updateSeed() {
+      return { access_token: accessToken ?? '<access_token>', family_name: 'Hazell nut' };
+    },
+
+    async updateProfile(body) {
+      const { access_token: token, ...patch } = body ?? this.updateSeed();
+      return wrap(
+        { access_token: token, ...patch },
+        await call('/me/v1/profile', patch, { method: 'PATCH', authorization: `Bearer ${token}` }),
+        '/me/v1/profile',
+        'PATCH'
+      );
+    },
+
+    /** GET /me/v1/authentication-methods. `type` (optional) filters by factor type. */
+    authMethodsSeed() {
+      return { access_token: accessToken ?? '<access_token>' };
+    },
+
+    async listAuthMethods(body) {
+      const { access_token: token, type } = body ?? this.authMethodsSeed();
+      const path = `/me/v1/authentication-methods${type ? `?${new URLSearchParams({ type })}` : ''}`;
+      return wrap(
+        { access_token: token, ...(type ? { type } : {}) },
+        await call(path, undefined, { method: 'GET', authorization: `Bearer ${token}` }),
+        path,
+        'GET'
+      );
+    },
+
+    /** GET /me/v1/factors: which factor types the tenant offers this user. No query parameters. */
+    factorsSeed() {
+      return { access_token: accessToken ?? '<access_token>' };
+    },
+
+    async listFactors(body) {
+      const { access_token: token } = body ?? this.factorsSeed();
+      return wrap(
+        { access_token: token },
+        await call('/me/v1/factors', undefined, { method: 'GET', authorization: `Bearer ${token}` }),
+        '/me/v1/factors',
+        'GET'
+      );
+    },
+
     seedFor(nextEntry) {
       const cap = byId(nextEntry.action);
       const seed = {
@@ -181,6 +296,12 @@ export function liveTransport({ tenant, capabilities }) {
       // The descriptor offers `delivery_methods`; the request must name one of them.
       if (Array.isArray(nextEntry.delivery_methods) && nextEntry.delivery_methods.length) {
         seed.delivery_method ??= nextEntry.delivery_methods[0];
+      }
+      /* verify:otp's `type` says what kind of code this is, and the server names it on the entry as
+         `channel`. The registry's example ("oob") was recorded from an email code, so for a TOTP
+         entry it is simply wrong; the entry is the authority, as with index and delivery_method. */
+      if (nextEntry.action === 'action:verify:otp:v1' && nextEntry.channel === 'totp') {
+        seed.type = 'totp';
       }
       for (const f of cap?.request || []) {
         if (seed[f.name] !== undefined) continue;
@@ -203,6 +324,8 @@ export function liveTransport({ tenant, capabilities }) {
     reset() {
       authSession = null;
       spent.clear();
+      refreshToken = null;
+      accessToken = null;
     },
   };
 }

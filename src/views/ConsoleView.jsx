@@ -5,7 +5,7 @@
  * lost while it is briefly invalid. It is parsed on send.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CheckCircle2, CircleSlash, RotateCcw } from 'lucide-react';
+import { ArrowRight, CheckCircle2, CircleSlash, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ExchangeCard } from '@/components/ExchangeCard.jsx';
 import { BrowserLeg } from '@/components/BrowserLeg.jsx';
@@ -22,6 +22,40 @@ import { useJira } from '@/hooks/useJira.js';
 import { probeServer } from '@/data/serverProbe.js';
 
 const pretty = (o) => JSON.stringify(o, null, 2);
+
+/* The live-only My Account steps, one row each. `seed`/`send` name transport methods, so adding an
+   endpoint is a row here plus a method there, not another branch in the view. */
+const MA_STEPS = {
+  refresh: {
+    title: 'Refresh token → My Account access token (MRRT)',
+    method: 'POST', path: '/oauth/token', seed: 'refreshSeed', send: 'refresh',
+    hint: 'MRRT: needs a refresh token (offline_access) and a client grant for the My Account API.',
+  },
+  profile: {
+    title: 'Get the profile',
+    method: 'GET', path: '/me/v1/profile', seed: 'profileSeed', send: 'getProfile',
+    button: ['GET /me/v1/profile', 'scope: read:me:profile'],
+    hint: 'access_token goes in the Authorization header; fields / include_fields are optional.',
+  },
+  update: {
+    title: 'Update the profile',
+    method: 'PATCH', path: '/me/v1/profile', seed: 'updateSeed', send: 'updateProfile',
+    button: ['PATCH /me/v1/profile', 'scope: update:me:profile'],
+    hint: 'access_token goes in the Authorization header; every other key is the PATCH body.',
+  },
+  methods: {
+    title: 'List the authentication methods',
+    method: 'GET', path: '/me/v1/authentication-methods', seed: 'authMethodsSeed', send: 'listAuthMethods',
+    button: ['GET /me/v1/authentication-methods', 'scope: read:me:authentication_methods'],
+    hint: 'access_token goes in the Authorization header; type optionally filters (e.g. phone, totp, passkey).',
+  },
+  factors: {
+    title: 'List the factors',
+    method: 'GET', path: '/me/v1/factors', seed: 'factorsSeed', send: 'listFactors',
+    button: ['GET /me/v1/factors', 'scope: read:me:factors'],
+    hint: 'access_token goes in the Authorization header; this endpoint takes no other input.',
+  },
+};
 
 export function ConsoleView({ mode, flowId, variantId, onFlowChange, onVariantChange, tenant, onTenantChange }) {
   const flow = useMemo(() => flowById(flowId), [flowId]);
@@ -41,6 +75,8 @@ export function ConsoleView({ mode, flowId, variantId, onFlowChange, onVariantCh
      the transcript would suggest /e/authorize issued the tokens, which is the one thing this whole
      design is careful not to claim. */
   const [exchanged, setExchanged] = useState([]);
+  /* MRRT and My Account, live only. Same reasoning as above: other endpoints, drawn apart. */
+  const [myAccount, setMyAccount] = useState([]);
   /* The Jira connection, only asked for in live mode — spec mode has no tenant to find a gap in.
      Null until the dev server answers, which is why the button does not flicker between labels. */
   const jira = useJira({ enabled: mode === 'live' });
@@ -89,6 +125,8 @@ export function ConsoleView({ mode, flowId, variantId, onFlowChange, onVariantCh
     seedRef.current = pretty(seed);
     setSent([]);
     setExchanged([]);
+    setMyAccount([]);
+    setMaDraft(null);
     setDraft(pretty(seed));
     setPendingTitle(variant?.happyPath.exchanges[0]?.label ?? 'Start the session');
     setAwaitingChoice(false);
@@ -107,6 +145,37 @@ export function ConsoleView({ mode, flowId, variantId, onFlowChange, onVariantCh
       setBusy(false);
     }
   }, []);
+
+  /* The two My Account steps are editable like every other call: the seed is a default, and the
+     user decides what is actually sent. Each step opens a pending card, sends on demand, and the
+     next step is seeded from what came back. */
+  const [maDraft, setMaDraft] = useState(null); // { kind: 'refresh' | 'profile' | 'update', text }
+  const startMa = (kind) => {
+    const t = transport.current;
+    const seed = t[MA_STEPS[kind].seed]();
+    setMaDraft({ kind, text: pretty(seed) });
+  };
+  const maParseError = useMemo(() => {
+    if (!maDraft) return null;
+    try {
+      const v = JSON.parse(maDraft.text);
+      return v && typeof v === 'object' && !Array.isArray(v) ? null : 'Expected a JSON object.';
+    } catch (e) {
+      return e.message;
+    }
+  }, [maDraft]);
+  const sendMa = async () => {
+    const t = transport.current;
+    setBusy(true);
+    try {
+      const body = JSON.parse(maDraft.text);
+      const result = await t[MA_STEPS[maDraft.kind].send](body);
+      setMyAccount((prev) => [...prev, { kind: maDraft.kind, result }]);
+      setMaDraft(null);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const parseError = useMemo(() => {
     if (!draft.trim()) return 'Request body is empty.';
@@ -306,6 +375,76 @@ export function ConsoleView({ mode, flowId, variantId, onFlowChange, onVariantCh
               jira={jira}
             />
           ))}
+
+          {myAccount.map(({ kind, result }, i) => (
+            <ExchangeCard
+              key={`ma-${i}`}
+              index={sent.length + exchanged.length + i}
+              title={MA_STEPS[kind].title}
+              result={result}
+              domain={tenant?.domain}
+              jira={jira}
+            />
+          ))}
+
+          {maDraft && (
+            <ExchangeCard
+              index={sent.length + exchanged.length + myAccount.length}
+              title={MA_STEPS[maDraft.kind].title}
+              path={MA_STEPS[maDraft.kind].path}
+              method={MA_STEPS[maDraft.kind].method}
+              draftText={maDraft.text}
+              onDraftChange={(text) => setMaDraft({ ...maDraft, text })}
+              parseError={maParseError}
+              busy={busy}
+              domain={tenant?.domain}
+              onSend={sendMa}
+              hint={MA_STEPS[maDraft.kind].hint}
+            />
+          )}
+
+          {mode === 'live' && exchanged.length > 0 && !maDraft && transport.current?.refresh && (
+            <div className="rounded-lg border border-dashed bg-muted/30 px-4 py-3">
+              <div className="mb-2.5 flex items-center gap-2 text-xs text-muted-foreground">
+                <ArrowRight className="h-3.5 w-3.5" />
+                Call the My Account API with these tokens
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-auto flex-col items-start gap-0.5 py-2 font-mono"
+                  onClick={() => startMa('refresh')}
+                  disabled={busy}
+                >
+                  <span className="text-xs font-semibold">refresh_token:mrrt</span>
+                  <span className="text-[10px] font-normal text-muted-foreground">
+                    {transport.current.hasRefreshToken()
+                      ? 'audience: /me/'
+                      : 'no refresh_token yet — scope needs offline_access'}
+                  </span>
+                </Button>
+                {myAccount.some((m) => m.kind === 'refresh' && m.result.body?.access_token) &&
+                  Object.entries(MA_STEPS)
+                    .filter(([, step]) => step.button)
+                    .map(([kind, step]) => (
+                      <Button
+                        key={kind}
+                        variant="outline"
+                        size="sm"
+                        className="h-auto flex-col items-start gap-0.5 py-2 font-mono"
+                        onClick={() => startMa(kind)}
+                        disabled={busy}
+                      >
+                        <span className="text-xs font-semibold">{step.button[0]}</span>
+                        <span className="text-[10px] font-normal text-muted-foreground">
+                          {step.button[1]}
+                        </span>
+                      </Button>
+                    ))}
+              </div>
+            </div>
+          )}
 
           {done && (
             <div className="flex items-start gap-3 rounded-lg border bg-muted/30 px-4 py-4 text-sm">
